@@ -245,9 +245,7 @@ impl ModuleData {
             Err(e) => {
                 // The reference decoder decodes function bodies as it goes, so an encoding
                 // error inside a body is reported before anything that follows it.
-                if let Err(be) = m.check_bodies_decode() {
-                    return Err(be);
-                }
+                m.check_bodies_decode()?;
                 Err(e)
             }
         }

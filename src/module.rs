@@ -85,6 +85,7 @@ impl Module {
             jit = Some(c);
         }
         let t = Instant::now();
+        #[allow(clippy::needless_range_loop)]
         for def in 0..ndef {
             let compiled = jit.as_ref().is_some_and(|j| j.entry(def as u32).is_some());
             if compiled {

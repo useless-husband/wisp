@@ -53,6 +53,9 @@ pub(crate) struct InstanceData {
     pub exports: HashMap<String, Extern>,
 }
 
+/// Tables, memories and globals are boxed so their addresses stay fixed: compiled code
+/// and instance contexts hold raw pointers to them.
+#[allow(clippy::vec_box)]
 pub struct StoreInner {
     pub(crate) config: Config,
     pub(crate) funcs: Vec<FuncInst>,

@@ -288,6 +288,7 @@ fn write_filestat(m: &mut Mem, ptr: u32, st: &libc::stat) -> R {
     );
     m.slice_mut(ptr, 64)?.fill(0);
     m.put_u64(ptr, st.st_dev as u64)?;
+    #[allow(clippy::unnecessary_cast)]
     m.put_u64(ptr + 8, st.st_ino as u64)?;
     m.put_u8(ptr + 16, filetype_of_mode(st.st_mode as u32))?;
     m.put_u64(ptr + 24, st.st_nlink as u64)?;

@@ -4,6 +4,9 @@
 //! callee frame is laid over the caller's argument slots (arguments are already in place and
 //! results land where the caller expects them) and a small frame record is pushed.
 
+// Explicit `&(*ptr).field` borrows are required by rustc's `dangerous_implicit_autorefs`.
+#![allow(clippy::needless_borrow)]
+
 use super::bytecode::*;
 use crate::error::{Trap, TrapCode};
 use crate::num;
