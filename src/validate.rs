@@ -24,36 +24,13 @@ pub fn validate(m: &ModuleData) -> Result<Vec<FuncInfo>> {
         Err(e @ Error::Invalid { .. }) => {
             // The reference interpreter decodes everything before validating, so a malformed
             // body later in the module takes precedence over an earlier validation error.
-            if let Err(me @ Error::Malformed { .. }) = check_bodies_decode(m) {
+            if let Err(me @ Error::Malformed { .. }) = m.check_bodies_decode() {
                 return Err(me);
             }
             Err(e)
         }
         Err(e) => Err(e),
     }
-}
-
-/// Decode every function body only, to find malformed encodings.
-fn check_bodies_decode(m: &ModuleData) -> Result<()> {
-    for body in &m.bodies {
-        let r = Reader::new(&m.bytes).sub(body.code_start, body.code_end, "unexpected end of section or function");
-        let mut ops = OpReader::new(r);
-        let mut depth = 1u32;
-        while depth > 0 {
-            match ops.read()? {
-                Op::Block(_) | Op::Loop(_) | Op::If(_) => depth += 1,
-                Op::End => depth -= 1,
-                Op::MemoryInit(_) | Op::DataDrop(_) if m.data_count.is_none() => {
-                    return Err(Error::malformed(ops.pos(), "data count section required"));
-                }
-                _ => {}
-            }
-        }
-        if !ops.eof() {
-            return Err(Error::malformed(ops.pos(), "section size mismatch"));
-        }
-    }
-    Ok(())
 }
 
 struct ModuleValidator<'m> {
@@ -68,7 +45,10 @@ fn inv<T>(offset: usize, msg: impl Into<String>) -> Result<T> {
 
 impl<'m> ModuleValidator<'m> {
     fn new(m: &'m ModuleData) -> Self {
-        ModuleValidator { m, refs: HashSet::new() }
+        ModuleValidator {
+            m,
+            refs: HashSet::new(),
+        }
     }
 
     fn check_type_idx(&self, idx: u32, off: usize) -> Result<&'m FuncType> {
@@ -93,8 +73,14 @@ impl<'m> ModuleValidator<'m> {
     fn run(mut self) -> Result<Vec<FuncInfo>> {
         let m = self.m;
         for t in &m.types {
-            if t.params.iter().chain(t.results.iter()).any(|&v| v == ValType::V128) {
-                return Err(Error::Unsupported("v128 values (SIMD) are not implemented".into()));
+            if t.params
+                .iter()
+                .chain(t.results.iter())
+                .any(|&v| v == ValType::V128)
+            {
+                return Err(Error::Unsupported(
+                    "v128 values (SIMD) are not implemented".into(),
+                ));
             }
         }
         for imp in &m.imports {
@@ -102,7 +88,9 @@ impl<'m> ModuleValidator<'m> {
                 ImportDesc::Func(t) => {
                     self.check_type_idx(*t, 0)?;
                 }
-                ImportDesc::Table(t) => self.check_limits(&t.limits, u32::MAX as u64, "table size", 0)?,
+                ImportDesc::Table(t) => {
+                    self.check_limits(&t.limits, u32::MAX as u64, "table size", 0)?
+                }
                 ImportDesc::Memory(t) => self.check_limits(
                     &t.limits,
                     MAX_PAGES as u64,
@@ -111,7 +99,9 @@ impl<'m> ModuleValidator<'m> {
                 )?,
                 ImportDesc::Global(g) => {
                     if g.ty == ValType::V128 {
-                        return Err(Error::Unsupported("v128 globals (SIMD) are not implemented".into()));
+                        return Err(Error::Unsupported(
+                            "v128 globals (SIMD) are not implemented".into(),
+                        ));
                     }
                 }
             }
@@ -126,7 +116,12 @@ impl<'m> ModuleValidator<'m> {
             return inv(0, "multiple memories");
         }
         for t in &m.memories[m.num_imported_memories as usize..] {
-            self.check_limits(&t.limits, MAX_PAGES as u64, "memory size must be at most 65536 pages (4GiB)", 0)?;
+            self.check_limits(
+                &t.limits,
+                MAX_PAGES as u64,
+                "memory size must be at most 65536 pages (4GiB)",
+                0,
+            )?;
         }
         // Function references declared outside function bodies (C.refs).
         let mut note_refs = |e: &ConstExpr, refs: &mut HashSet<u32>| {
@@ -156,7 +151,9 @@ impl<'m> ModuleValidator<'m> {
         for (i, init) in m.global_inits.iter().enumerate() {
             let gt = m.globals[ng + i];
             if gt.ty == ValType::V128 {
-                return Err(Error::Unsupported("v128 globals (SIMD) are not implemented".into()));
+                return Err(Error::Unsupported(
+                    "v128 globals (SIMD) are not implemented".into(),
+                ));
             }
             self.const_expr(init, gt.ty)?;
         }
@@ -211,7 +208,9 @@ impl<'m> ModuleValidator<'m> {
             let func = m.num_imported_funcs + i as u32;
             let mut fv = FuncValidator::new(&self, func, body)?;
             fv.run()?;
-            infos.push(FuncInfo { max_height: fv.max_height as u32 });
+            infos.push(FuncInfo {
+                max_height: fv.max_height as u32,
+            });
         }
         Ok(infos)
     }
@@ -284,6 +283,7 @@ struct FuncValidator<'a, 'm> {
     max_height: usize,
     /// Start of the instruction being validated, for error offsets.
     at: usize,
+    body_end: usize,
 }
 
 impl<'a, 'm> FuncValidator<'a, 'm> {
@@ -293,10 +293,18 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
         let mut locals: Vec<ValType> = ft.params.to_vec();
         locals.extend_from_slice(&body.locals);
         if locals.contains(&ValType::V128) {
-            return Err(Error::Unsupported("v128 locals (SIMD) are not implemented".into()));
+            return Err(Error::Unsupported(
+                "v128 locals (SIMD) are not implemented".into(),
+            ));
         }
-        let r = Reader::new(&m.bytes).sub(body.code_start, body.code_end, "unexpected end of section or function");
+        // Decode past the declared body end like the reference decoder; `run` checks the size.
+        let r = Reader::new(&m.bytes).sub(
+            body.code_start,
+            m.bytes.len(),
+            "unexpected end of section or function",
+        );
         Ok(FuncValidator {
+            body_end: body.code_end,
             mv,
             ops: OpReader::new(r),
             locals,
@@ -359,7 +367,13 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
     fn push_ctrl(&mut self, kind: Kind, start: Vec<ValType>, end: Vec<ValType>) {
         let height = self.vals.len();
         self.push_vals(&start);
-        self.ctrls.push(Ctrl { kind, start, end, height, unreachable: false });
+        self.ctrls.push(Ctrl {
+            kind,
+            start,
+            end,
+            height,
+            unreachable: false,
+        });
     }
 
     fn pop_ctrl(&mut self) -> Result<Ctrl> {
@@ -381,7 +395,11 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
             return self.err(format!("unknown label {depth}"));
         }
         let c = &self.ctrls[n - 1 - depth as usize];
-        Ok(if c.kind == Kind::Loop { c.start.clone() } else { c.end.clone() })
+        Ok(if c.kind == Kind::Loop {
+            c.start.clone()
+        } else {
+            c.end.clone()
+        })
     }
 
     fn set_unreachable(&mut self) {
@@ -395,7 +413,9 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
             BlockType::Empty => (vec![], vec![]),
             BlockType::Value(t) => {
                 if t == ValType::V128 {
-                    return Err(Error::Unsupported("v128 blocks (SIMD) are not implemented".into()));
+                    return Err(Error::Unsupported(
+                        "v128 blocks (SIMD) are not implemented".into(),
+                    ));
                 }
                 (vec![], vec![t])
             }
@@ -459,13 +479,22 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
 
     fn run(&mut self) -> Result<()> {
         let results = self.results.clone();
-        self.ctrls.push(Ctrl { kind: Kind::Func, start: vec![], end: results, height: 0, unreachable: false });
+        self.ctrls.push(Ctrl {
+            kind: Kind::Func,
+            start: vec![],
+            end: results,
+            height: 0,
+            unreachable: false,
+        });
         while !self.ctrls.is_empty() {
             self.at = self.ops.pos();
+            if self.at > self.body_end {
+                return Err(Error::malformed(self.at, "section size mismatch"));
+            }
             let op = self.ops.read()?;
             self.op(op)?;
         }
-        if !self.ops.eof() {
+        if self.ops.pos() != self.body_end {
             return Err(Error::malformed(self.ops.pos(), "section size mismatch"));
         }
         Ok(())
@@ -479,7 +508,11 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
             Op::Block(bt) | Op::Loop(bt) => {
                 let (s, e) = self.block_sig(bt)?;
                 self.pop_vals(&s)?;
-                let kind = if matches!(op, Op::Block(_)) { Kind::Block } else { Kind::Loop };
+                let kind = if matches!(op, Op::Block(_)) {
+                    Kind::Block
+                } else {
+                    Kind::Loop
+                };
                 self.push_ctrl(kind, s, e);
             }
             Op::If(bt) => {
@@ -489,10 +522,10 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
                 self.push_ctrl(Kind::If, s, e);
             }
             Op::Else => {
-                let c = self.pop_ctrl()?;
-                if c.kind != Kind::If {
-                    return self.err("else without if");
+                if self.ctrls.last().unwrap().kind != Kind::If {
+                    return Err(Error::malformed(self.at, "END opcode expected"));
                 }
+                let c = self.pop_ctrl()?;
                 self.push_ctrl(Kind::Else, c.start, c.end);
             }
             Op::End => {

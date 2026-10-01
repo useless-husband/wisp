@@ -23,7 +23,10 @@ struct Frame {
 unsafe fn interp_func(fr: *const VmFuncRef) -> *const InterpFunc {
     unsafe {
         let m = (*(*fr).vmctx).interp as *const InterpModule;
-        (&(*m).funcs).get_unchecked((*fr).def_index as usize).as_ref().unwrap_unchecked() as *const InterpFunc
+        (&(*m).funcs)
+            .get_unchecked((*fr).def_index as usize)
+            .as_ref()
+            .unwrap_unchecked() as *const InterpFunc
     }
 }
 
@@ -33,7 +36,11 @@ unsafe fn interp_func(fr: *const VmFuncRef) -> *const InterpFunc {
 /// # Safety
 /// `fr` must be an interpreted function of a live instance in `store`, and `fp` must point
 /// into the store's value stack with room for the function's frame.
-pub(crate) unsafe fn execute(store: *mut StoreInner, fr: *const VmFuncRef, fp: *mut u64) -> Result<(), Trap> {
+pub(crate) unsafe fn execute(
+    store: *mut StoreInner,
+    fr: *const VmFuncRef,
+    fp: *mut u64,
+) -> Result<(), Trap> {
     unsafe {
         let st = &mut *store;
         let stack_base = st.istack.as_mut_ptr();
@@ -49,7 +56,11 @@ pub(crate) unsafe fn execute(store: *mut StoreInner, fr: *const VmFuncRef, fp: *
         if fp.add((*func).frame_size as usize) > stack_end || st.depth >= max_depth {
             return Err(TrapCode::StackExhausted.into());
         }
-        ptr::write_bytes(fp.add((*func).nparams as usize), 0, (*func).nlocals as usize);
+        ptr::write_bytes(
+            fp.add((*func).nparams as usize),
+            0,
+            (*func).nlocals as usize,
+        );
         let entry_depth = st.depth;
         st.depth += 1;
         let mut frames: Vec<Frame> = Vec::new();
@@ -160,11 +171,23 @@ pub(crate) unsafe fn execute(store: *mut StoreInner, fr: *const VmFuncRef, fp: *
                 let nfp = fp.add($base as usize);
                 if (*cfr).kind == KIND_INTERP {
                     let callee = interp_func(cfr);
-                    if nfp.add((*callee).frame_size as usize) > stack_end || (*store).depth >= max_depth {
+                    if nfp.add((*callee).frame_size as usize) > stack_end
+                        || (*store).depth >= max_depth
+                    {
                         trap!(TrapCode::StackExhausted);
                     }
-                    ptr::write_bytes(nfp.add((*callee).nparams as usize), 0, (*callee).nlocals as usize);
-                    frames.push(Frame { pc, code, fp, vmctx, func });
+                    ptr::write_bytes(
+                        nfp.add((*callee).nparams as usize),
+                        0,
+                        (*callee).nlocals as usize,
+                    );
+                    frames.push(Frame {
+                        pc,
+                        code,
+                        fp,
+                        vmctx,
+                        func,
+                    });
                     (*store).depth += 1;
                     func = callee;
                     vmctx = (*cfr).vmctx;
@@ -387,22 +410,34 @@ pub(crate) unsafe fn execute(store: *mut StoreInner, fr: *const VmFuncRef, fp: *
 
                 Instr::LoadI32 { d, a, off } => load!(d, a, off, u32, |v: u32| v as u64),
                 Instr::LoadI64 { d, a, off } => load!(d, a, off, u64, |v: u64| v),
-                Instr::LoadI32S8 { d, a, off } => load!(d, a, off, u8, |v: u8| v as i8 as i32 as u32 as u64),
+                Instr::LoadI32S8 { d, a, off } => {
+                    load!(d, a, off, u8, |v: u8| v as i8 as i32 as u32 as u64)
+                }
                 Instr::LoadI32U8 { d, a, off } => load!(d, a, off, u8, |v: u8| v as u64),
-                Instr::LoadI32S16 { d, a, off } => load!(d, a, off, u16, |v: u16| v as i16 as i32 as u32 as u64),
+                Instr::LoadI32S16 { d, a, off } => {
+                    load!(d, a, off, u16, |v: u16| v as i16 as i32 as u32 as u64)
+                }
                 Instr::LoadI32U16 { d, a, off } => load!(d, a, off, u16, |v: u16| v as u64),
-                Instr::LoadI64S8 { d, a, off } => load!(d, a, off, u8, |v: u8| v as i8 as i64 as u64),
+                Instr::LoadI64S8 { d, a, off } => {
+                    load!(d, a, off, u8, |v: u8| v as i8 as i64 as u64)
+                }
                 Instr::LoadI64U8 { d, a, off } => load!(d, a, off, u8, |v: u8| v as u64),
-                Instr::LoadI64S16 { d, a, off } => load!(d, a, off, u16, |v: u16| v as i16 as i64 as u64),
+                Instr::LoadI64S16 { d, a, off } => {
+                    load!(d, a, off, u16, |v: u16| v as i16 as i64 as u64)
+                }
                 Instr::LoadI64U16 { d, a, off } => load!(d, a, off, u16, |v: u16| v as u64),
-                Instr::LoadI64S32 { d, a, off } => load!(d, a, off, u32, |v: u32| v as i32 as i64 as u64),
+                Instr::LoadI64S32 { d, a, off } => {
+                    load!(d, a, off, u32, |v: u32| v as i32 as i64 as u64)
+                }
                 Instr::LoadI64U32 { d, a, off } => load!(d, a, off, u32, |v: u32| v as u64),
                 Instr::Store8 { a, v, off } => store!(a, v, off, u8),
                 Instr::Store16 { a, v, off } => store!(a, v, off, u16),
                 Instr::Store32 { a, v, off } => store!(a, v, off, u32),
                 Instr::Store64 { a, v, off } => store!(a, v, off, u64),
 
-                Instr::Trap { code: c } => trap!(TrapCode::from_raw(c).unwrap_or(TrapCode::Unreachable)),
+                Instr::Trap { code: c } => {
+                    trap!(TrapCode::from_raw(c).unwrap_or(TrapCode::Unreachable))
+                }
                 Instr::Br { t } => pc = code.add(t as usize),
                 Instr::BrIfNez { c, t } => {
                     if r!(c) as u32 != 0 {
@@ -418,23 +453,21 @@ pub(crate) unsafe fn execute(store: *mut StoreInner, fr: *const VmFuncRef, fp: *
                     let i = r!(idx) as u32;
                     pc = pc.add(if i < len { i } else { len } as usize);
                 }
-                Instr::Return => {
-                    match frames.pop() {
-                        None => {
-                            (*store).depth = entry_depth;
-                            return Ok(());
-                        }
-                        Some(f) => {
-                            pc = f.pc;
-                            code = f.code;
-                            fp = f.fp;
-                            vmctx = f.vmctx;
-                            func = f.func;
-                            (*store).depth -= 1;
-                            reload!();
-                        }
+                Instr::Return => match frames.pop() {
+                    None => {
+                        (*store).depth = entry_depth;
+                        return Ok(());
                     }
-                }
+                    Some(f) => {
+                        pc = f.pc;
+                        code = f.code;
+                        fp = f.fp;
+                        vmctx = f.vmctx;
+                        func = f.func;
+                        (*store).depth -= 1;
+                        reload!();
+                    }
+                },
                 Instr::Call { f, base } => {
                     let cfr = *(*vmctx).funcs.add(f as usize);
                     call!(cfr, base);
@@ -449,7 +482,7 @@ pub(crate) unsafe fn execute(store: *mut StoreInner, fr: *const VmFuncRef, fp: *
                     }
                     let cfr = *(*tab).elems.add(i as usize) as *const VmFuncRef;
                     if cfr.is_null() {
-                        trap!(TrapCode::UninitializedElement);
+                        trap!(Trap::uninitialized(i));
                     }
                     if (*cfr).type_id != *(*vmctx).type_ids.add(ty as usize) {
                         trap!(TrapCode::IndirectCallTypeMismatch);

@@ -18,15 +18,24 @@ pub struct Store<T> {
 
 impl<T: 'static> Store<T> {
     pub fn new(engine: &Engine, data: T) -> Store<T> {
-        Store { inner: StoreInner::new(engine.config.clone(), Box::new(data)), _data: PhantomData }
+        Store {
+            inner: StoreInner::new(engine.config.clone(), Box::new(data)),
+            _data: PhantomData,
+        }
     }
 
     pub fn data(&self) -> &T {
-        self.inner.data.downcast_ref::<T>().expect("store data type")
+        self.inner
+            .data
+            .downcast_ref::<T>()
+            .expect("store data type")
     }
 
     pub fn data_mut(&mut self) -> &mut T {
-        self.inner.data.downcast_mut::<T>().expect("store data type")
+        self.inner
+            .data
+            .downcast_mut::<T>()
+            .expect("store data type")
     }
 
     /// Set the remaining fuel (only metered if the engine was built with `fuel(true)`).
@@ -48,11 +57,17 @@ pub struct Caller<'a, T> {
 
 impl<'a, T: 'static> Caller<'a, T> {
     pub fn data(&self) -> &T {
-        self.store.data.downcast_ref::<T>().expect("store data type")
+        self.store
+            .data
+            .downcast_ref::<T>()
+            .expect("store data type")
     }
 
     pub fn data_mut(&mut self) -> &mut T {
-        self.store.data.downcast_mut::<T>().expect("store data type")
+        self.store
+            .data
+            .downcast_mut::<T>()
+            .expect("store data type")
     }
 
     /// An export of the calling instance.
@@ -71,7 +86,11 @@ impl<'a, T: 'static> Caller<'a, T> {
             Some(m) => self.store.memories[m.0 as usize].as_mut_slice(),
             None => &mut [],
         };
-        let data = self.store.data.downcast_mut::<T>().expect("store data type");
+        let data = self
+            .store
+            .data
+            .downcast_mut::<T>()
+            .expect("store data type");
         (mem, data)
     }
 
@@ -89,7 +108,15 @@ impl Func {
         f: impl Fn(Caller<'_, T>, &[Val], &mut [Val]) -> Result<(), Trap> + 'static,
     ) -> Func {
         let wrapped: HostFn = Rc::new(move |s: &mut StoreInner, inst, args, results| {
-            f(Caller { store: s, instance: inst, _data: PhantomData }, args, results)
+            f(
+                Caller {
+                    store: s,
+                    instance: inst,
+                    _data: PhantomData,
+                },
+                args,
+                results,
+            )
         });
         store.inner.alloc_host_func(ty, wrapped)
     }
@@ -125,7 +152,11 @@ impl Memory {
     /// Grow by `delta` pages; returns the old size.
     pub fn grow<T>(&self, store: &mut Store<T>, delta: u32) -> Result<u32> {
         let r = store.inner.memories[self.0 as usize].grow(delta);
-        if r < 0 { Err(Error::Api("memory.grow failed".into())) } else { Ok(r as u32) }
+        if r < 0 {
+            Err(Error::Api("memory.grow failed".into()))
+        } else {
+            Ok(r as u32)
+        }
     }
 
     pub fn read<T>(&self, store: &Store<T>, offset: usize, buf: &mut [u8]) -> Result<()> {
@@ -162,7 +193,9 @@ impl Global {
     pub fn set<T>(&self, store: &mut Store<T>, v: Val) -> Result<()> {
         let ty = store.inner.globals[self.0 as usize].ty;
         if !ty.mutable || v.ty() != ty.ty {
-            return Err(Error::Api("cannot set global: immutable or wrong type".into()));
+            return Err(Error::Api(
+                "cannot set global: immutable or wrong type".into(),
+            ));
         }
         let raw = store.inner.val_to_raw(&v);
         store.inner.globals[self.0 as usize].value = raw;
@@ -230,8 +263,11 @@ impl Instance {
 
     /// All exports, sorted by name.
     pub fn exports<T>(&self, store: &Store<T>) -> Vec<(String, Extern)> {
-        let mut v: Vec<(String, Extern)> =
-            store.inner.instances[self.0 as usize].exports.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut v: Vec<(String, Extern)> = store.inner.instances[self.0 as usize]
+            .exports
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
@@ -251,11 +287,15 @@ impl<T: 'static> Default for Linker<T> {
 
 impl<T: 'static> Linker<T> {
     pub fn new() -> Self {
-        Linker { defs: HashMap::new(), _data: PhantomData }
+        Linker {
+            defs: HashMap::new(),
+            _data: PhantomData,
+        }
     }
 
     pub fn define(&mut self, module: &str, name: &str, ext: Extern) -> &mut Self {
-        self.defs.insert((module.to_string(), name.to_string()), ext);
+        self.defs
+            .insert((module.to_string(), name.to_string()), ext);
         self
     }
 
@@ -281,7 +321,9 @@ impl<T: 'static> Linker<T> {
     }
 
     pub fn get(&self, module: &str, name: &str) -> Option<Extern> {
-        self.defs.get(&(module.to_string(), name.to_string())).copied()
+        self.defs
+            .get(&(module.to_string(), name.to_string()))
+            .copied()
     }
 
     /// Resolve the module's imports and instantiate it.

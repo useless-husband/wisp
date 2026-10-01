@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 /// Signature of a host function as stored: the store, the calling instance (if called from
 /// wasm), arguments and results.
-pub(crate) type HostFn = Rc<dyn Fn(&mut StoreInner, Option<u32>, &[Val], &mut [Val]) -> Result<(), Trap>>;
+pub(crate) type HostFn =
+    Rc<dyn Fn(&mut StoreInner, Option<u32>, &[Val], &mut [Val]) -> Result<(), Trap>>;
 
 pub(crate) enum FuncKind {
     Wasm { instance: u32 },
@@ -132,7 +133,11 @@ impl StoreInner {
             def_index: 0,
             kind: KIND_HOST,
         });
-        self.funcs.push(FuncInst { ty, kind: FuncKind::Host(f), vmref });
+        self.funcs.push(FuncInst {
+            ty,
+            kind: FuncKind::Host(f),
+            vmref,
+        });
         Func(addr)
     }
 
@@ -195,7 +200,10 @@ impl StoreInner {
 
     /// Call a function from the host.
     pub(crate) fn invoke(&mut self, f: Func, args: &[Val]) -> Result<Vec<Val>> {
-        let fi = self.funcs.get(f.0 as usize).ok_or_else(|| Error::Api("unknown function".into()))?;
+        let fi = self
+            .funcs
+            .get(f.0 as usize)
+            .ok_or_else(|| Error::Api("unknown function".into()))?;
         let ty = fi.ty.clone();
         if args.len() != ty.params.len() {
             return Err(Error::Api(format!(
@@ -206,7 +214,10 @@ impl StoreInner {
         }
         for (a, t) in args.iter().zip(ty.params.iter()) {
             if a.ty() != *t {
-                return Err(Error::Api(format!("argument type mismatch: expected {t}, got {}", a.ty())));
+                return Err(Error::Api(format!(
+                    "argument type mismatch: expected {t}, got {}",
+                    a.ty()
+                )));
             }
         }
         let n = ty.params.len().max(ty.results.len());
@@ -218,7 +229,12 @@ impl StoreInner {
         self.runtime.store = p;
         let fr: *const VmFuncRef = &*self.funcs[f.0 as usize].vmref;
         unsafe { self.call_raw(fr, raw.as_mut_ptr(), None) }.map_err(Error::Trap)?;
-        Ok(ty.results.iter().enumerate().map(|(i, t)| self.raw_to_val(raw[i], *t)).collect())
+        Ok(ty
+            .results
+            .iter()
+            .enumerate()
+            .map(|(i, t)| self.raw_to_val(raw[i], *t))
+            .collect())
     }
 
     /// Call through a function reference with arguments/results in `args`.
@@ -267,7 +283,11 @@ impl StoreInner {
     ) -> Result<(), Trap> {
         let saved = self.istack_top;
         self.istack_top = top;
-        let caller = if caller.is_null() { None } else { Some(unsafe { (*caller).instance }) };
+        let caller = if caller.is_null() {
+            None
+        } else {
+            Some(unsafe { (*caller).instance })
+        };
         let r = unsafe { self.call_raw(fr, args, caller) };
         self.istack_top = saved;
         r
@@ -275,13 +295,24 @@ impl StoreInner {
 
     /// # Safety
     /// `args` must have room for `max(params, results)` values.
-    pub(crate) unsafe fn call_host(&mut self, addr: u32, args: *mut u64, caller: Option<u32>) -> Result<(), Trap> {
+    pub(crate) unsafe fn call_host(
+        &mut self,
+        addr: u32,
+        args: *mut u64,
+        caller: Option<u32>,
+    ) -> Result<(), Trap> {
         let fi = &self.funcs[addr as usize];
-        let FuncKind::Host(f) = &fi.kind else { unreachable!() };
+        let FuncKind::Host(f) = &fi.kind else {
+            unreachable!()
+        };
         let f = f.clone();
         let ty = fi.ty.clone();
-        let params: Vec<Val> =
-            ty.params.iter().enumerate().map(|(i, t)| self.raw_to_val(unsafe { *args.add(i) }, *t)).collect();
+        let params: Vec<Val> = ty
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, t)| self.raw_to_val(unsafe { *args.add(i) }, *t))
+            .collect();
         let mut results: Vec<Val> = ty.results.iter().map(|t| Val::default_for(*t)).collect();
         if self.depth >= self.max_depth {
             return Err(TrapCode::StackExhausted.into());
@@ -292,7 +323,10 @@ impl StoreInner {
         r?;
         for (i, (v, t)) in results.iter().zip(ty.results.iter()).enumerate() {
             if v.ty() != *t {
-                return Err(Trap::host(format!("host function returned {} where {t} was expected", v.ty())));
+                return Err(Trap::host(format!(
+                    "host function returned {} where {t} was expected",
+                    v.ty()
+                )));
             }
             unsafe { *args.add(i) = self.val_to_raw(v) };
         }
@@ -306,7 +340,14 @@ impl StoreInner {
         &mut self.instances[i as usize]
     }
 
-    pub(crate) fn memory_init(&mut self, vmctx: *mut VmCtx, seg: u32, dst: u32, src: u32, n: u32) -> Result<(), TrapCode> {
+    pub(crate) fn memory_init(
+        &mut self,
+        vmctx: *mut VmCtx,
+        seg: u32,
+        dst: u32,
+        src: u32,
+        n: u32,
+    ) -> Result<(), TrapCode> {
         let inst = self.instance_of(vmctx);
         let (s, e) = inst.datas[seg as usize];
         let module = inst.module.clone();
@@ -316,7 +357,8 @@ impl StoreInner {
         if src + n > data.len() as u64 || dst + n > mem.size {
             return Err(TrapCode::MemoryOutOfBounds);
         }
-        mem.as_mut_slice()[dst as usize..(dst + n) as usize].copy_from_slice(&data[src as usize..(src + n) as usize]);
+        mem.as_mut_slice()[dst as usize..(dst + n) as usize]
+            .copy_from_slice(&data[src as usize..(src + n) as usize]);
         Ok(())
     }
 
@@ -340,7 +382,8 @@ impl StoreInner {
         if src + n > elems.len() as u64 || dst + n > tab.size() as u64 {
             return Err(TrapCode::TableOutOfBounds);
         }
-        tab.slice_mut()[dst as usize..(dst + n) as usize].copy_from_slice(&elems[src as usize..(src + n) as usize]);
+        tab.slice_mut()[dst as usize..(dst + n) as usize]
+            .copy_from_slice(&elems[src as usize..(src + n) as usize]);
         Ok(())
     }
 
@@ -351,7 +394,11 @@ impl StoreInner {
     // ---- instance access ----
 
     pub(crate) fn export(&self, inst: Instance, name: &str) -> Option<Extern> {
-        self.instances.get(inst.0 as usize)?.exports.get(name).copied()
+        self.instances
+            .get(inst.0 as usize)?
+            .exports
+            .get(name)
+            .copied()
     }
 
     pub(crate) fn instance_memory(&self, inst: u32) -> Option<Memory> {
@@ -373,18 +420,31 @@ impl StoreInner {
 
     // ---- instantiation ----
 
-    pub(crate) fn instantiate(&mut self, module: &Arc<ModuleInner>, imports: &[Extern]) -> Result<Instance> {
+    pub(crate) fn instantiate(
+        &mut self,
+        module: &Arc<ModuleInner>,
+        imports: &[Extern],
+    ) -> Result<Instance> {
         use crate::binary::module::{DataMode, ElemMode, ImportDesc};
         let m = &module.data;
         if imports.len() != m.imports.len() {
-            return Err(Error::Link(format!("expected {} imports, got {}", m.imports.len(), imports.len())));
+            return Err(Error::Link(format!(
+                "expected {} imports, got {}",
+                m.imports.len(),
+                imports.len()
+            )));
         }
         let mut funcs = Vec::new();
         let mut tables = Vec::new();
         let mut memories = Vec::new();
         let mut globals = Vec::new();
         for (imp, ext) in m.imports.iter().zip(imports) {
-            let bad = || Error::Link(format!("incompatible import type for \"{}\" \"{}\"", imp.module, imp.name));
+            let bad = || {
+                Error::Link(format!(
+                    "incompatible import type for \"{}\" \"{}\"",
+                    imp.module, imp.name
+                ))
+            };
             match (&imp.desc, ext) {
                 (ImportDesc::Func(t), Extern::Func(f)) => {
                     let want = &m.types[*t as usize];
@@ -402,7 +462,11 @@ impl StoreInner {
                     tables.push(x.0);
                 }
                 (ImportDesc::Memory(t), Extern::Memory(x)) => {
-                    let have = self.memories.get(x.0 as usize).ok_or_else(bad)?.current_type();
+                    let have = self
+                        .memories
+                        .get(x.0 as usize)
+                        .ok_or_else(bad)?
+                        .current_type();
                     if !have.limits.matches(&t.limits) {
                         return Err(bad());
                     }
@@ -434,7 +498,11 @@ impl StoreInner {
                 def_index: def as u32,
                 kind,
             });
-            self.funcs.push(FuncInst { ty, kind: FuncKind::Wasm { instance: inst_idx }, vmref });
+            self.funcs.push(FuncInst {
+                ty,
+                kind: FuncKind::Wasm { instance: inst_idx },
+                vmref,
+            });
             funcs.push(addr);
         }
         for t in &m.tables[m.num_imported_tables as usize..] {
@@ -443,18 +511,24 @@ impl StoreInner {
         for t in &m.memories[m.num_imported_memories as usize..] {
             memories.push(self.alloc_memory(*t)?.0);
         }
-        let func_ptrs: Vec<*const VmFuncRef> =
-            funcs.iter().map(|&f| &*self.funcs[f as usize].vmref as *const VmFuncRef).collect();
+        let func_ptrs: Vec<*const VmFuncRef> = funcs
+            .iter()
+            .map(|&f| &*self.funcs[f as usize].vmref as *const VmFuncRef)
+            .collect();
         // Globals: initialisers may read imported globals and take function references.
         for (i, init) in m.global_inits.iter().enumerate() {
             let ty = m.globals[m.num_imported_globals as usize + i];
             let v = self.eval_const(&init.ops, &globals, &func_ptrs);
             globals.push(self.alloc_global(ty, v).0);
         }
-        let mut table_ptrs: Vec<*mut VmTable> =
-            tables.iter().map(|&t| &mut *self.tables[t as usize] as *mut VmTable).collect();
-        let mut global_ptrs: Vec<*mut u64> =
-            globals.iter().map(|&g| &mut self.globals[g as usize].value as *mut u64).collect();
+        let mut table_ptrs: Vec<*mut VmTable> = tables
+            .iter()
+            .map(|&t| &mut *self.tables[t as usize] as *mut VmTable)
+            .collect();
+        let mut global_ptrs: Vec<*mut u64> = globals
+            .iter()
+            .map(|&g| &mut self.globals[g as usize].value as *mut u64)
+            .collect();
         let memory_ptr: *mut VmMemory = match memories.first() {
             Some(&mi) => &mut *self.memories[mi as usize],
             None => std::ptr::null_mut(),
@@ -488,7 +562,12 @@ impl StoreInner {
         let elems: Vec<Vec<u64>> = m
             .elems
             .iter()
-            .map(|seg| seg.items.iter().map(|it| self.eval_const(&it.ops, &globals, &func_ptrs)).collect())
+            .map(|seg| {
+                seg.items
+                    .iter()
+                    .map(|it| self.eval_const(&it.ops, &globals, &func_ptrs))
+                    .collect()
+            })
             .collect();
         let datas: Vec<(usize, usize)> = m.datas.iter().map(|d| (d.start, d.end)).collect();
         self.instances.push(InstanceData {
@@ -537,7 +616,12 @@ impl StoreInner {
     }
 
     /// Evaluate a validated constant expression to a raw value.
-    fn eval_const(&self, ops: &[crate::binary::ops::Op], globals: &[u32], funcs: &[*const VmFuncRef]) -> u64 {
+    fn eval_const(
+        &self,
+        ops: &[crate::binary::ops::Op],
+        globals: &[u32],
+        funcs: &[*const VmFuncRef],
+    ) -> u64 {
         use crate::binary::ops::Op;
         let mut stack: Vec<u64> = Vec::with_capacity(2);
         for op in ops {

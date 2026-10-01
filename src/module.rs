@@ -65,7 +65,11 @@ impl Module {
         let t1 = Instant::now();
         let info = validate(&data)?;
         let t2 = Instant::now();
-        let mut stats = CompileStats { decode: t1 - t0, validate: t2 - t1, ..Default::default() };
+        let mut stats = CompileStats {
+            decode: t1 - t0,
+            validate: t2 - t1,
+            ..Default::default()
+        };
         let ndef = data.num_defined_funcs() as usize;
         let mut interp = InterpModule {
             funcs: (0..ndef).map(|_| None).collect(),
@@ -90,14 +94,26 @@ impl Module {
                     && stats.fallback_reasons.len() < 8
                     && let Some(r) = j.fallback_reason(def as u32)
                 {
-                    stats.fallback_reasons.push(format!("func {}: {r}", def as u32 + data.num_imported_funcs));
+                    stats.fallback_reasons.push(format!(
+                        "func {}: {r}",
+                        def as u32 + data.num_imported_funcs
+                    ));
                 }
                 stats.interpreted_funcs += 1;
-                interp.funcs[def] = Some(Translator::translate(&data, def as u32, &info[def], fuel)?);
+                interp.funcs[def] =
+                    Some(Translator::translate(&data, def as u32, &info[def], fuel)?);
             }
         }
         stats.translate = t.elapsed();
-        Ok(Module { inner: Arc::new(ModuleInner { data, interp, jit, info, stats }) })
+        Ok(Module {
+            inner: Arc::new(ModuleInner {
+                data,
+                interp,
+                jit,
+                info,
+                stats,
+            }),
+        })
     }
 
     /// Only decode and validate.

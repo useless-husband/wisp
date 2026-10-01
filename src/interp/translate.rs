@@ -96,7 +96,20 @@ fn is_commutative(op: NumOp) -> bool {
     use NumOp::*;
     matches!(
         op,
-        I32Add | I32Mul | I32And | I32Or | I32Xor | I32Eq | I32Ne | I64Add | I64Mul | I64And | I64Or | I64Xor | I64Eq | I64Ne
+        I32Add
+            | I32Mul
+            | I32And
+            | I32Or
+            | I32Xor
+            | I32Eq
+            | I32Ne
+            | I64Add
+            | I64Mul
+            | I64And
+            | I64Or
+            | I64Xor
+            | I64Eq
+            | I64Ne
     )
 }
 
@@ -182,7 +195,12 @@ fn store_instr(op: StoreOp, a: Slot, v: Slot, off: u32) -> Instr {
 }
 
 impl<'a> Translator<'a> {
-    pub fn translate(m: &'a ModuleData, def_index: u32, info: &FuncInfo, fuel: bool) -> Result<InterpFunc> {
+    pub fn translate(
+        m: &'a ModuleData,
+        def_index: u32,
+        info: &FuncInfo,
+        fuel: bool,
+    ) -> Result<InterpFunc> {
         let func = m.num_imported_funcs + def_index;
         let ft = m.func_type(func);
         let body = &m.bodies[def_index as usize];
@@ -397,7 +415,11 @@ impl<'a> Translator<'a> {
 
     fn label_arity(&self, fi: usize) -> usize {
         let f = &self.frames[fi];
-        if f.kind == Kind::Loop { f.params.len() } else { f.results.len() }
+        if f.kind == Kind::Loop {
+            f.params.len()
+        } else {
+            f.results.len()
+        }
     }
 
     /// Whether branching to frame `fi` needs value copies.
@@ -526,7 +548,9 @@ impl<'a> Translator<'a> {
         let imm_of = |v: u64, ty: ValType| -> Option<u32> {
             match ty {
                 ValType::I32 => Some(v as u32),
-                ValType::I64 if (v as i64) >= i32::MIN as i64 && (v as i64) <= i32::MAX as i64 => Some(v as u32),
+                ValType::I64 if (v as i64) >= i32::MIN as i64 && (v as i64) <= i32::MAX as i64 => {
+                    Some(v as u32)
+                }
                 _ => None,
             }
         };
@@ -576,7 +600,9 @@ impl<'a> Translator<'a> {
         }
         match op {
             Op::Unreachable => {
-                self.emit(Instr::Trap { code: TrapCode::Unreachable.to_raw() });
+                self.emit(Instr::Trap {
+                    code: TrapCode::Unreachable.to_raw(),
+                });
                 self.set_dead();
             }
             Op::Nop => {}
@@ -703,7 +729,11 @@ impl<'a> Translator<'a> {
                 for _ in 0..=len {
                     self.emit(Instr::Br { t: 0 });
                 }
-                let all: Vec<u32> = targets.iter().copied().chain(std::iter::once(default)).collect();
+                let all: Vec<u32> = targets
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(default))
+                    .collect();
                 for (k, &l) in all.iter().enumerate() {
                     let fi = self.frame_at(l);
                     let entry = table + k;
@@ -873,7 +903,11 @@ impl<'a> Translator<'a> {
             }
             Op::MemoryCopy => self.bulk(3, |base| Instr::MemoryCopy { base }),
             Op::MemoryFill => self.bulk(3, |base| Instr::MemoryFill { base }),
-            Op::TableInit { elem, table } => self.bulk(3, |base| Instr::TableInit { base, seg: elem, t: table }),
+            Op::TableInit { elem, table } => self.bulk(3, |base| Instr::TableInit {
+                base,
+                seg: elem,
+                t: table,
+            }),
             Op::ElemDrop(seg) => {
                 self.emit(Instr::ElemDrop { seg });
             }

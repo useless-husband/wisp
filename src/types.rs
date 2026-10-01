@@ -61,7 +61,10 @@ pub struct FuncType {
 
 impl FuncType {
     pub fn new(params: impl Into<Box<[ValType]>>, results: impl Into<Box<[ValType]>>) -> Self {
-        FuncType { params: params.into(), results: results.into() }
+        FuncType {
+            params: params.into(),
+            results: results.into(),
+        }
     }
 }
 

@@ -18,12 +18,32 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        Reader { data, pos: 0, end: data.len(), eof_msg: "unexpected end" }
+        Reader {
+            data,
+            pos: 0,
+            end: data.len(),
+            eof_msg: "unexpected end",
+        }
     }
 
     /// A reader over `data[pos..end]`, positions stay absolute.
     pub fn sub(&self, pos: usize, end: usize, eof_msg: &'static str) -> Reader<'a> {
-        Reader { data: self.data, pos, end, eof_msg }
+        Reader {
+            data: self.data,
+            pos,
+            end,
+            eof_msg,
+        }
+    }
+
+    /// Allow reads up to the end of the whole input (the caller checks `end` afterwards).
+    pub fn unbounded(&self) -> Reader<'a> {
+        Reader {
+            data: self.data,
+            pos: self.pos,
+            end: self.data.len(),
+            eof_msg: self.eof_msg,
+        }
     }
 
     pub fn eof(&self) -> bool {
@@ -79,18 +99,39 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes(a))
     }
 
+    /// Next byte of an integer encoding. Like the reference interpreter, integers are read
+    /// from the whole input and only then checked against the current bound, so an
+    /// overlong encoding is reported as such even when it crosses a section end.
+    fn leb_byte(&mut self) -> Result<u8> {
+        if self.pos >= self.data.len() {
+            return self.eof_err();
+        }
+        let b = self.data[self.pos];
+        self.pos += 1;
+        Ok(b)
+    }
+
+    /// A value that ran past `end` is accepted here; the enclosing section's size check (or
+    /// the next bounded read) reports it, which is the order the reference decoder uses.
+    fn leb_done<T>(&mut self, v: T) -> Result<T> {
+        Ok(v)
+    }
+
     /// Unsigned LEB128 of at most `bits` bits.
     fn uleb(&mut self, bits: u32) -> Result<u64> {
         let max_bytes = bits.div_ceil(7);
         let mut result: u64 = 0;
         let mut shift = 0u32;
         for i in 0..max_bytes {
-            let b = self.u8()?;
+            let b = self.leb_byte()?;
             let payload = (b & 0x7F) as u64;
             if i == max_bytes - 1 {
                 // Last permitted byte: the continuation bit must be clear and unused bits zero.
                 if b & 0x80 != 0 {
-                    return Err(Error::malformed(self.pos - 1, "integer representation too long"));
+                    return Err(Error::malformed(
+                        self.pos - 1,
+                        "integer representation too long",
+                    ));
                 }
                 let used = bits - shift;
                 if payload >> used != 0 {
@@ -99,7 +140,7 @@ impl<'a> Reader<'a> {
             }
             result |= payload << shift;
             if b & 0x80 == 0 {
-                return Ok(result);
+                return self.leb_done(result);
             }
             shift += 7;
         }
@@ -112,11 +153,14 @@ impl<'a> Reader<'a> {
         let mut result: i64 = 0;
         let mut shift = 0u32;
         for i in 0..max_bytes {
-            let b = self.u8()?;
+            let b = self.leb_byte()?;
             let payload = (b & 0x7F) as i64;
             if i == max_bytes - 1 {
                 if b & 0x80 != 0 {
-                    return Err(Error::malformed(self.pos - 1, "integer representation too long"));
+                    return Err(Error::malformed(
+                        self.pos - 1,
+                        "integer representation too long",
+                    ));
                 }
                 // The unused high bits must be a sign extension of the last used bit.
                 let used = bits - shift; // number of value bits in this byte
@@ -132,7 +176,7 @@ impl<'a> Reader<'a> {
                 if shift < 64 && (b & 0x40) != 0 {
                     result |= -1i64 << shift;
                 }
-                return Ok(result);
+                return self.leb_done(result);
             }
         }
         unreachable!()
@@ -161,6 +205,9 @@ impl<'a> Reader<'a> {
     /// A length-prefixed UTF-8 name.
     pub fn name(&mut self) -> Result<String> {
         let len = self.u32()? as usize;
+        if self.pos > self.end {
+            return self.eof_err();
+        }
         if len > self.remaining() {
             return Err(Error::malformed(self.pos, "length out of bounds"));
         }
@@ -176,7 +223,10 @@ impl<'a> Reader<'a> {
         let b = self.u8()?;
         match ValType::from_byte(b) {
             Some(t) => Ok(t),
-            None => Err(Error::malformed(self.pos - 1, format!("malformed value type 0x{b:02x}"))),
+            None => Err(Error::malformed(
+                self.pos - 1,
+                format!("malformed value type 0x{b:02x}"),
+            )),
         }
     }
 
@@ -211,9 +261,16 @@ mod tests {
         assert_eq!(u32_of(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]).unwrap(), u32::MAX);
         // Non-minimal encodings are allowed.
         assert_eq!(u32_of(&[0x80, 0x80, 0x80, 0x80, 0x00]).unwrap(), 0);
-        assert_eq!(u32_of(&[0xFF, 0xFF, 0xFF, 0xFF, 0x1F]).unwrap_err().message(), "integer too large");
         assert_eq!(
-            u32_of(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x00]).unwrap_err().message(),
+            u32_of(&[0xFF, 0xFF, 0xFF, 0xFF, 0x1F])
+                .unwrap_err()
+                .message(),
+            "integer too large"
+        );
+        assert_eq!(
+            u32_of(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x00])
+                .unwrap_err()
+                .message(),
             "integer representation too long"
         );
         assert_eq!(u32_of(&[0x80]).unwrap_err().message(), "unexpected end");
@@ -225,15 +282,30 @@ mod tests {
         assert_eq!(s32_of(&[0xC0, 0xBB, 0x78]).unwrap(), -123456);
         assert_eq!(s32_of(&[0x80, 0x80, 0x80, 0x80, 0x78]).unwrap(), i32::MIN);
         assert_eq!(s32_of(&[0xFF, 0xFF, 0xFF, 0xFF, 0x07]).unwrap(), i32::MAX);
-        assert_eq!(s32_of(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]).unwrap_err().message(), "integer too large");
-        assert_eq!(s32_of(&[0x80, 0x80, 0x80, 0x80, 0x70]).unwrap_err().message(), "integer too large");
-        assert_eq!(s64_of(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7F]).unwrap(), i64::MIN);
+        assert_eq!(
+            s32_of(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F])
+                .unwrap_err()
+                .message(),
+            "integer too large"
+        );
+        assert_eq!(
+            s32_of(&[0x80, 0x80, 0x80, 0x80, 0x70])
+                .unwrap_err()
+                .message(),
+            "integer too large"
+        );
+        assert_eq!(
+            s64_of(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7F]).unwrap(),
+            i64::MIN
+        );
         assert_eq!(
             s64_of(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]).unwrap(),
             i64::MAX
         );
         assert_eq!(
-            s64_of(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x41]).unwrap_err().message(),
+            s64_of(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x41])
+                .unwrap_err()
+                .message(),
             "integer too large"
         );
         // s33 block types.
@@ -243,7 +315,13 @@ mod tests {
     #[test]
     fn utf8_names() {
         assert_eq!(Reader::new(&[2, b'h', b'i']).name().unwrap(), "hi");
-        assert_eq!(Reader::new(&[2, 0xC0, 0x80]).name().unwrap_err().message(), "malformed UTF-8 encoding");
-        assert_eq!(Reader::new(&[5, b'a']).name().unwrap_err().message(), "length out of bounds");
+        assert_eq!(
+            Reader::new(&[2, 0xC0, 0x80]).name().unwrap_err().message(),
+            "malformed UTF-8 encoding"
+        );
+        assert_eq!(
+            Reader::new(&[5, b'a']).name().unwrap_err().message(),
+            "length out of bounds"
+        );
     }
 }

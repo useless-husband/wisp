@@ -79,7 +79,13 @@ impl VmMemory {
             }
             reserve /= 2;
         };
-        let mut m = Box::new(VmMemory { base, size: 0, reserved: reserve as usize, max_pages, ty });
+        let mut m = Box::new(VmMemory {
+            base,
+            size: 0,
+            reserved: reserve as usize,
+            max_pages,
+            ty,
+        });
         if m.grow(ty.limits.min) < 0 {
             return Err("cannot allocate initial linear memory".into());
         }
@@ -166,7 +172,12 @@ pub const TABLE_LEN: u32 = 8;
 
 impl VmTable {
     pub fn new(ty: TableType, init: u64) -> Box<VmTable> {
-        let mut t = Box::new(VmTable { elems: ptr::null_mut(), len: 0, vec: Vec::new(), ty });
+        let mut t = Box::new(VmTable {
+            elems: ptr::null_mut(),
+            len: 0,
+            vec: Vec::new(),
+            ty,
+        });
         t.vec = vec![init; ty.limits.min as usize];
         t.sync();
         t
@@ -185,7 +196,12 @@ impl VmTable {
     pub fn grow(&mut self, delta: u32, init: u64) -> i32 {
         let old = self.vec.len() as u64;
         let new = old + delta as u64;
-        let max = self.ty.limits.max.map(|m| m as u64).unwrap_or(u32::MAX as u64);
+        let max = self
+            .ty
+            .limits
+            .max
+            .map(|m| m as u64)
+            .unwrap_or(u32::MAX as u64);
         if new > max || new > MAX_TABLE_ELEMS {
             return -1;
         }
@@ -295,7 +311,12 @@ mod tests {
 
     #[test]
     fn memory_grows_in_place() {
-        let ty = MemoryType { limits: crate::types::Limits { min: 1, max: Some(4) } };
+        let ty = MemoryType {
+            limits: crate::types::Limits {
+                min: 1,
+                max: Some(4),
+            },
+        };
         let mut m = VmMemory::new(ty).unwrap();
         let base = m.base;
         m.as_mut_slice()[100] = 7;

@@ -36,6 +36,10 @@ pub(crate) fn interp_trampoline() -> *const u8 {
     std::ptr::null()
 }
 
-pub(crate) unsafe fn call_compiled(_s: &mut StoreInner, _fr: *const VmFuncRef, _args: *mut u64) -> Result<(), Trap> {
+pub(crate) unsafe fn call_compiled(
+    _s: &mut StoreInner,
+    _fr: *const VmFuncRef,
+    _args: *mut u64,
+) -> Result<(), Trap> {
     Err(TrapCode::Host("compiled code is not available".into()).into())
 }

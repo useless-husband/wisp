@@ -12,7 +12,11 @@ pub enum Strategy {
 
 impl Default for Strategy {
     fn default() -> Self {
-        if crate::jit::available() { Strategy::Compiler } else { Strategy::Interpreter }
+        if crate::jit::available() {
+            Strategy::Compiler
+        } else {
+            Strategy::Interpreter
+        }
     }
 }
 

@@ -93,15 +93,24 @@ pub(crate) const RAW_PENDING: u32 = 100;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Trap {
     pub code: TrapCode,
+    /// The table index for `UninitializedElement` traps.
+    pub index: Option<u32>,
 }
 
 impl Trap {
     pub fn new(code: TrapCode) -> Self {
-        Trap { code }
+        Trap { code, index: None }
     }
 
     pub fn host(msg: impl Into<String>) -> Self {
-        Trap { code: TrapCode::Host(msg.into()) }
+        Trap::new(TrapCode::Host(msg.into()))
+    }
+
+    pub(crate) fn uninitialized(index: u32) -> Self {
+        Trap {
+            code: TrapCode::UninitializedElement,
+            index: Some(index),
+        }
     }
 
     /// The exit status if this trap is a WASI `proc_exit`.
@@ -115,13 +124,17 @@ impl Trap {
 
 impl From<TrapCode> for Trap {
     fn from(code: TrapCode) -> Self {
-        Trap { code }
+        Trap::new(code)
     }
 }
 
 impl fmt::Display for Trap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.code.message())
+        f.write_str(&self.code.message())?;
+        if let Some(i) = self.index {
+            write!(f, " {i}")?;
+        }
+        Ok(())
     }
 }
 
@@ -146,11 +159,17 @@ pub enum Error {
 
 impl Error {
     pub(crate) fn malformed(offset: usize, message: impl Into<String>) -> Self {
-        Error::Malformed { offset, message: message.into() }
+        Error::Malformed {
+            offset,
+            message: message.into(),
+        }
     }
 
     pub(crate) fn invalid(offset: usize, message: impl Into<String>) -> Self {
-        Error::Invalid { offset, message: message.into() }
+        Error::Invalid {
+            offset,
+            message: message.into(),
+        }
     }
 
     /// The bare message, without the error class or offset.

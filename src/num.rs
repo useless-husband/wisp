@@ -669,14 +669,29 @@ mod tests {
         let f = |x: f32| x.to_bits() as u64;
         let d = |x: f64| x.to_bits();
         assert_eq!(i32_trunc_f32_s(f(-2147483648.0)), Ok(0x8000_0000));
-        assert_eq!(i32_trunc_f32_s(f(2147483648.0)), Err(TrapCode::IntegerOverflow));
+        assert_eq!(
+            i32_trunc_f32_s(f(2147483648.0)),
+            Err(TrapCode::IntegerOverflow)
+        );
         assert_eq!(i32_trunc_f32_u(f(-0.9)), Ok(0));
         assert_eq!(i32_trunc_f32_u(f(-1.0)), Err(TrapCode::IntegerOverflow));
         assert_eq!(i32_trunc_f64_s(d(-2147483648.9)), Ok(0x8000_0000));
-        assert_eq!(i32_trunc_f64_s(d(-2147483649.0)), Err(TrapCode::IntegerOverflow));
-        assert_eq!(i64_trunc_f64_s(d(-9223372036854775808.0)), Ok(i64::MIN as u64));
-        assert_eq!(i64_trunc_f32_s(f(-9223372036854775808.0)), Ok(i64::MIN as u64));
-        assert_eq!(i64_trunc_f64_u(d(f64::NAN)), Err(TrapCode::InvalidConversionToInteger));
+        assert_eq!(
+            i32_trunc_f64_s(d(-2147483649.0)),
+            Err(TrapCode::IntegerOverflow)
+        );
+        assert_eq!(
+            i64_trunc_f64_s(d(-9223372036854775808.0)),
+            Ok(i64::MIN as u64)
+        );
+        assert_eq!(
+            i64_trunc_f32_s(f(-9223372036854775808.0)),
+            Ok(i64::MIN as u64)
+        );
+        assert_eq!(
+            i64_trunc_f64_u(d(f64::NAN)),
+            Err(TrapCode::InvalidConversionToInteger)
+        );
         assert_eq!(i64_trunc_sat_f64_u(d(-5.0)), 0);
         assert_eq!(i32_trunc_sat_f32_s(f(f32::NAN)), 0);
     }
@@ -689,7 +704,10 @@ mod tests {
         assert_eq!(f32_max(n, p), p);
         let nan = f32_min(f32::NAN.to_bits() as u64, p);
         assert!(f32::from_bits(nan as u32).is_nan());
-        assert_eq!(f64_min(0f64.to_bits(), (-0f64).to_bits()), (-0f64).to_bits());
+        assert_eq!(
+            f64_min(0f64.to_bits(), (-0f64).to_bits()),
+            (-0f64).to_bits()
+        );
     }
 
     #[test]
@@ -702,7 +720,10 @@ mod tests {
 
     #[test]
     fn division_traps() {
-        assert_eq!(i32_div_s(0x8000_0000, 0xFFFF_FFFF), Err(TrapCode::IntegerOverflow));
+        assert_eq!(
+            i32_div_s(0x8000_0000, 0xFFFF_FFFF),
+            Err(TrapCode::IntegerOverflow)
+        );
         assert_eq!(i32_rem_s(0x8000_0000, 0xFFFF_FFFF), Ok(0));
         assert_eq!(i64_div_u(1, 0), Err(TrapCode::IntegerDivideByZero));
     }

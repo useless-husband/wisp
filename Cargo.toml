@@ -19,3 +19,8 @@ wat = "1"
 
 [profile.release]
 debug = 1
+
+[[test]]
+name = "spec"
+path = "tests/spec/main.rs"
+harness = false

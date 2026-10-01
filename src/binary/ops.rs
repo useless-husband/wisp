@@ -293,10 +293,16 @@ pub enum Op {
     End,
     Br(u32),
     BrIf(u32),
-    BrTable { targets: Box<[u32]>, default: u32 },
+    BrTable {
+        targets: Box<[u32]>,
+        default: u32,
+    },
     Return,
     Call(u32),
-    CallIndirect { ty: u32, table: u32 },
+    CallIndirect {
+        ty: u32,
+        table: u32,
+    },
     Drop,
     /// Untyped `select` (numeric operands only).
     Select,
@@ -326,9 +332,15 @@ pub enum Op {
     DataDrop(u32),
     MemoryCopy,
     MemoryFill,
-    TableInit { elem: u32, table: u32 },
+    TableInit {
+        elem: u32,
+        table: u32,
+    },
     ElemDrop(u32),
-    TableCopy { dst: u32, src: u32 },
+    TableCopy {
+        dst: u32,
+        src: u32,
+    },
     TableGrow(u32),
     TableSize(u32),
     TableFill(u32),
@@ -413,7 +425,10 @@ impl<'a> OpReader<'a> {
                     targets.push(self.r.u32()?);
                 }
                 let default = self.r.u32()?;
-                Op::BrTable { targets: targets.into_boxed_slice(), default }
+                Op::BrTable {
+                    targets: targets.into_boxed_slice(),
+                    default,
+                }
             }
             0x0F => Op::Return,
             0x10 => Op::Call(self.r.u32()?),
@@ -523,7 +538,11 @@ impl<'a> OpReader<'a> {
                     _ => return Err(Error::malformed(start, "illegal opcode")),
                 }
             }
-            0xFD => return Err(Error::Unsupported("SIMD (v128) instructions are not implemented".into())),
+            0xFD => {
+                return Err(Error::Unsupported(
+                    "SIMD (v128) instructions are not implemented".into(),
+                ));
+            }
             _ => return Err(Error::malformed(start, "illegal opcode")),
         })
     }
@@ -549,13 +568,34 @@ mod tests {
     fn decodes_prefixed_and_memargs() {
         let bytes = [0x28, 0x02, 0x10, 0xFC, 0x0A, 0x00, 0x00, 0xFC, 0x05, 0x0B];
         let mut r = OpReader::new(Reader::new(&bytes));
-        assert_eq!(r.read().unwrap(), Op::Load(LoadOp::I32Load, MemArg { align: 2, offset: 16 }));
+        assert_eq!(
+            r.read().unwrap(),
+            Op::Load(
+                LoadOp::I32Load,
+                MemArg {
+                    align: 2,
+                    offset: 16
+                }
+            )
+        );
         assert_eq!(r.read().unwrap(), Op::MemoryCopy);
         assert_eq!(r.read().unwrap(), Op::Num(NumOp::I64TruncSatF32U));
         assert_eq!(r.read().unwrap(), Op::End);
         let bad = [0x28, 0x20, 0x00];
-        assert_eq!(OpReader::new(Reader::new(&bad)).read().unwrap_err().message(), "malformed memop flags");
+        assert_eq!(
+            OpReader::new(Reader::new(&bad))
+                .read()
+                .unwrap_err()
+                .message(),
+            "malformed memop flags"
+        );
         let bad = [0x3F, 0x01];
-        assert_eq!(OpReader::new(Reader::new(&bad)).read().unwrap_err().message(), "zero byte expected");
+        assert_eq!(
+            OpReader::new(Reader::new(&bad))
+                .read()
+                .unwrap_err()
+                .message(),
+            "zero byte expected"
+        );
     }
 }

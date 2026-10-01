@@ -154,24 +154,35 @@ fn section_rank(id: u8) -> u8 {
     }
 }
 
-/// Bound a `vec` length by the bytes left, so a corrupt count cannot cause a huge allocation.
-fn vec_len(r: &mut Reader, min_elem_size: usize) -> Result<usize> {
-    let n = r.u32()? as usize;
-    if n.saturating_mul(min_elem_size) > r.remaining() {
-        return Err(Error::malformed(r.pos, "length out of bounds"));
-    }
-    Ok(n)
+/// A `vec` length. Callers must not trust it for allocation sizes: use [`cap`].
+fn vec_len(r: &mut Reader, _min_elem_size: usize) -> Result<usize> {
+    Ok(r.u32()? as usize)
+}
+
+/// A safe initial capacity for a vector of `n` elements read from `r`.
+fn cap(n: usize, r: &Reader) -> usize {
+    n.min(r.remaining())
 }
 
 fn limits(r: &mut Reader) -> Result<Limits> {
     let start = r.pos;
     let flags = r.u8()?;
+    if flags & 0x80 != 0 {
+        // The flags are a one-byte LEB128 in the reference decoder.
+        return Err(Error::malformed(start, "integer representation too long"));
+    }
     match flags {
-        0x00 => Ok(Limits { min: r.u32()?, max: None }),
+        0x00 => Ok(Limits {
+            min: r.u32()?,
+            max: None,
+        }),
         0x01 => {
             let min = r.u32()?;
             let max = r.u32()?;
-            Ok(Limits { min, max: Some(max) })
+            Ok(Limits {
+                min,
+                max: Some(max),
+            })
         }
         // 0x02/0x03 are shared memories (threads proposal), 0x04+ memory64.
         _ => Err(Error::malformed(start, "integer too large")),
@@ -180,7 +191,10 @@ fn limits(r: &mut Reader) -> Result<Limits> {
 
 fn table_type(r: &mut Reader) -> Result<TableType> {
     let elem = r.ref_type()?;
-    Ok(TableType { elem, limits: limits(r)? })
+    Ok(TableType {
+        elem,
+        limits: limits(r)?,
+    })
 }
 
 fn global_type(r: &mut Reader) -> Result<GlobalType> {
@@ -197,7 +211,8 @@ fn global_type(r: &mut Reader) -> Result<GlobalType> {
 fn const_expr(r: &mut Reader) -> Result<ConstExpr> {
     let offset = r.pos;
     let mut ops = Vec::new();
-    let mut or = OpReader::new(r.clone());
+    // Like the reference decoder, read past the section end and let the size check catch it.
+    let mut or = OpReader::new(r.unbounded());
     loop {
         let op = or.read()?;
         if op == Op::End {
@@ -212,27 +227,82 @@ fn const_expr(r: &mut Reader) -> Result<ConstExpr> {
 fn func_index_expr(r: &mut Reader) -> Result<ConstExpr> {
     let offset = r.pos;
     let idx = r.u32()?;
-    Ok(ConstExpr { ops: vec![Op::RefFunc(idx)], offset })
+    Ok(ConstExpr {
+        ops: vec![Op::RefFunc(idx)],
+        offset,
+    })
 }
 
 impl ModuleData {
     /// Decode a binary module. Function bodies are split out but not decoded.
     pub fn decode(bytes: &[u8]) -> Result<ModuleData> {
-        let mut m = ModuleData { bytes: bytes.to_vec(), ..Default::default() };
-        let data: &[u8] = &bytes[..];
-        let mut r = Reader::new(data);
-        if r.remaining() < 4 || r.bytes(4)? != b"\0asm" {
-            return Err(Error::malformed(0, "magic header not detected"));
+        let mut m = ModuleData {
+            bytes: bytes.to_vec(),
+            ..Default::default()
+        };
+        match m.decode_sections() {
+            Ok(()) => Ok(m),
+            Err(e) => {
+                // The reference decoder decodes function bodies as it goes, so an encoding
+                // error inside a body is reported before anything that follows it.
+                if let Err(be) = m.check_bodies_decode() {
+                    return Err(be);
+                }
+                Err(e)
+            }
         }
-        if r.remaining() < 4 {
-            return Err(Error::malformed(4, "unknown binary version"));
+    }
+
+    /// Decode every collected function body's instruction encoding (no type checking).
+    pub fn check_bodies_decode(&self) -> Result<()> {
+        for body in &self.bodies {
+            let r = Reader::new(&self.bytes).sub(
+                body.code_start,
+                self.bytes.len(),
+                "unexpected end of section or function",
+            );
+            let mut ops = OpReader::new(r);
+            let mut kinds: Vec<bool> = vec![false]; // whether each open block is an `if`
+            while !kinds.is_empty() {
+                if ops.pos() > body.code_end {
+                    return Err(Error::malformed(ops.pos(), "section size mismatch"));
+                }
+                match ops.read()? {
+                    Op::Block(_) | Op::Loop(_) => kinds.push(false),
+                    Op::If(_) => kinds.push(true),
+                    Op::Else if !kinds.last().copied().unwrap_or(false) => {
+                        return Err(Error::malformed(ops.pos(), "END opcode expected"));
+                    }
+                    Op::Else => *kinds.last_mut().unwrap() = false,
+                    Op::End => {
+                        kinds.pop();
+                    }
+                    Op::MemoryInit(_) | Op::DataDrop(_) if self.data_count.is_none() => {
+                        return Err(Error::malformed(ops.pos(), "data count section required"));
+                    }
+                    _ => {}
+                }
+            }
+            if ops.pos() != body.code_end {
+                return Err(Error::malformed(ops.pos(), "section size mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    fn decode_sections(&mut self) -> Result<()> {
+        let m = self;
+        let bytes: &[u8] = &m.bytes.clone();
+        let mut r = Reader::new(bytes);
+        if r.bytes(4)? != b"\0asm" {
+            return Err(Error::malformed(0, "magic header not detected"));
         }
         if r.u32_fixed()? != 1 {
             return Err(Error::malformed(4, "unknown binary version"));
         }
         let mut last_rank = 0u8;
         let mut func_count: Option<usize> = None;
-        let mut code_seen = false;
+        let mut code_count: Option<usize> = None;
         let mut data_seen = false;
         while !r.eof() {
             let id_pos = r.pos;
@@ -249,7 +319,10 @@ impl ModuleData {
             if id != SEC_CUSTOM {
                 let rank = section_rank(id);
                 if rank <= last_rank {
-                    return Err(Error::malformed(id_pos, "unexpected content after last section"));
+                    return Err(Error::malformed(
+                        id_pos,
+                        "unexpected content after last section",
+                    ));
                 }
                 last_rank = rank;
             }
@@ -263,12 +336,12 @@ impl ModuleData {
                             return Err(Error::malformed(p, "integer representation too long"));
                         }
                         let np = vec_len(&mut s, 1)?;
-                        let mut params = Vec::with_capacity(np);
+                        let mut params = Vec::with_capacity(cap(np, &s));
                         for _ in 0..np {
                             params.push(s.val_type()?);
                         }
                         let nr = vec_len(&mut s, 1)?;
-                        let mut results = Vec::with_capacity(nr);
+                        let mut results = Vec::with_capacity(cap(nr, &s));
                         for _ in 0..nr {
                             results.push(s.val_type()?);
                         }
@@ -284,7 +357,9 @@ impl ModuleData {
                         let desc = match s.u8()? {
                             0x00 => ImportDesc::Func(s.u32()?),
                             0x01 => ImportDesc::Table(table_type(&mut s)?),
-                            0x02 => ImportDesc::Memory(MemoryType { limits: limits(&mut s)? }),
+                            0x02 => ImportDesc::Memory(MemoryType {
+                                limits: limits(&mut s)?,
+                            }),
                             0x03 => ImportDesc::Global(global_type(&mut s)?),
                             _ => return Err(Error::malformed(kp, "malformed import kind")),
                         };
@@ -325,7 +400,9 @@ impl ModuleData {
                 SEC_MEMORY => {
                     let n = vec_len(&mut s, 2)?;
                     for _ in 0..n {
-                        m.memories.push(MemoryType { limits: limits(&mut s)? });
+                        m.memories.push(MemoryType {
+                            limits: limits(&mut s)?,
+                        });
                     }
                 }
                 SEC_GLOBAL => {
@@ -363,15 +440,15 @@ impl ModuleData {
                 }
                 SEC_DATACOUNT => m.data_count = Some(s.u32()?),
                 SEC_CODE => {
-                    code_seen = true;
                     let n = vec_len(&mut s, 1)?;
-                    if n != func_count.unwrap_or(0) {
-                        return Err(Error::malformed(s.pos, "function and code section have inconsistent lengths"));
-                    }
+                    code_count = Some(n);
                     for _ in 0..n {
                         let size = s.u32()? as usize;
                         if size > s.remaining() {
-                            return Err(Error::malformed(s.pos, "unexpected end of section or function"));
+                            return Err(Error::malformed(
+                                s.pos,
+                                "unexpected end of section or function",
+                            ));
                         }
                         let body_end = s.pos + size;
                         let mut b = s.sub(s.pos, body_end, "unexpected end of section or function");
@@ -387,7 +464,11 @@ impl ModuleData {
                             let t = b.val_type()?;
                             locals.extend(std::iter::repeat_n(t, count as usize));
                         }
-                        m.bodies.push(FuncBody { locals, code_start: b.pos, code_end: body_end });
+                        m.bodies.push(FuncBody {
+                            locals,
+                            code_start: b.pos,
+                            code_end: body_end,
+                        });
                         s.pos = body_end;
                     }
                 }
@@ -397,27 +478,43 @@ impl ModuleData {
                     if let Some(c) = m.data_count
                         && c as usize != n
                     {
-                        return Err(Error::malformed(s.pos, "data count and data section have inconsistent lengths"));
+                        return Err(Error::malformed(
+                            s.pos,
+                            "data count and data section have inconsistent lengths",
+                        ));
                     }
                     for _ in 0..n {
                         let fp = s.pos;
                         let flags = s.u32()?;
                         let mode = match flags {
-                            0 => DataMode::Active { memory: 0, offset: const_expr(&mut s)? },
+                            0 => DataMode::Active {
+                                memory: 0,
+                                offset: const_expr(&mut s)?,
+                            },
                             1 => DataMode::Passive,
                             2 => {
                                 let memory = s.u32()?;
-                                DataMode::Active { memory, offset: const_expr(&mut s)? }
+                                DataMode::Active {
+                                    memory,
+                                    offset: const_expr(&mut s)?,
+                                }
                             }
                             _ => return Err(Error::malformed(fp, "malformed data segment flags")),
                         };
                         let len = s.u32()? as usize;
                         if len > s.remaining() {
-                            return Err(Error::malformed(s.pos, "unexpected end of section or function"));
+                            return Err(Error::malformed(
+                                s.pos,
+                                "unexpected end of section or function",
+                            ));
                         }
                         let start = s.pos;
                         s.pos += len;
-                        m.datas.push(DataSegment { mode, start, end: start + len });
+                        m.datas.push(DataSegment {
+                            mode,
+                            start,
+                            end: start + len,
+                        });
                     }
                 }
                 _ => unreachable!(),
@@ -427,13 +524,19 @@ impl ModuleData {
             }
             r.pos = end;
         }
-        if !code_seen && func_count.unwrap_or(0) != 0 {
-            return Err(Error::malformed(r.pos, "function and code section have inconsistent lengths"));
+        if code_count.unwrap_or(0) != func_count.unwrap_or(0) {
+            return Err(Error::malformed(
+                r.pos,
+                "function and code section have inconsistent lengths",
+            ));
         }
         if m.data_count.unwrap_or(0) != 0 && !data_seen {
-            return Err(Error::malformed(r.pos, "data count and data section have inconsistent lengths"));
+            return Err(Error::malformed(
+                r.pos,
+                "data count and data section have inconsistent lengths",
+            ));
         }
-        Ok(m)
+        Ok(())
     }
 
     fn custom_section(&mut self, s: &mut Reader) -> Result<()> {
@@ -489,7 +592,10 @@ fn elem_segment(s: &mut Reader) -> Result<ElemSegment> {
     let uses_exprs = flags & 4 != 0;
     let mode = if !passive_or_decl {
         let table = if explicit_table { s.u32()? } else { 0 };
-        ElemMode::Active { table, offset: const_expr(s)? }
+        ElemMode::Active {
+            table,
+            offset: const_expr(s)?,
+        }
     } else if explicit_table {
         ElemMode::Declarative
     } else {
@@ -504,9 +610,18 @@ fn elem_segment(s: &mut Reader) -> Result<ElemSegment> {
         elem_kind(s)?
     };
     let n = vec_len(s, 1)?;
-    let mut items = Vec::with_capacity(n);
+    let mut items = Vec::with_capacity(cap(n, s));
     for _ in 0..n {
-        items.push(if uses_exprs { const_expr(s)? } else { func_index_expr(s)? });
+        items.push(if uses_exprs {
+            const_expr(s)?
+        } else {
+            func_index_expr(s)?
+        });
     }
-    Ok(ElemSegment { ty, mode, items, offset })
+    Ok(ElemSegment {
+        ty,
+        mode,
+        items,
+        offset,
+    })
 }
