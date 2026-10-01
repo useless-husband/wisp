@@ -539,6 +539,10 @@ impl ModuleData {
 
     fn custom_section(&mut self, s: &mut Reader) -> Result<()> {
         let name = s.name()?;
+        // Custom sections are decoded from a bounded sub-stream in the reference decoder.
+        if s.pos > s.end {
+            return Err(Error::malformed(s.end, "unexpected end"));
+        }
         if name == "name" {
             // Best effort: a malformed name section is ignored, as the spec requires.
             let mut sub = s.sub(s.pos, s.end, "unexpected end");

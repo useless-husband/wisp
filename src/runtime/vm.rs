@@ -242,9 +242,8 @@ pub struct VmRuntime {
     pub fuel: i64,
     /// Stack pointer saved by the innermost compiled-code entry, used to unwind on traps.
     pub entry_sp: usize,
-    /// Raw trap code being delivered.
-    pub trap: u32,
-    pub _pad: u32,
+    /// Extra trap data (the table index of an uninitialized-element trap).
+    pub trap_arg: u64,
     /// The store, for host calls and slow paths.
     pub store: *mut crate::runtime::store::StoreInner,
 }
@@ -252,7 +251,7 @@ pub struct VmRuntime {
 pub const RT_STACK_LIMIT: u32 = 0;
 pub const RT_FUEL: u32 = 8;
 pub const RT_ENTRY_SP: u32 = 16;
-pub const RT_TRAP: u32 = 24;
+pub const RT_TRAP_ARG: u32 = 24;
 
 /// Per-instance context. Compiled code keeps a pointer to it in a pinned register.
 #[repr(C)]
@@ -281,6 +280,7 @@ pub const CTX_FUNCS: u32 = 16;
 pub const CTX_GLOBALS: u32 = 24;
 pub const CTX_TABLES: u32 = 32;
 pub const CTX_TYPE_IDS: u32 = 40;
+pub const CTX_INSTANCE: u32 = 56;
 
 #[cfg(test)]
 mod tests {
@@ -300,13 +300,14 @@ mod tests {
         assert_eq!(offset_of!(VmRuntime, stack_limit), RT_STACK_LIMIT as usize);
         assert_eq!(offset_of!(VmRuntime, fuel), RT_FUEL as usize);
         assert_eq!(offset_of!(VmRuntime, entry_sp), RT_ENTRY_SP as usize);
-        assert_eq!(offset_of!(VmRuntime, trap), RT_TRAP as usize);
+        assert_eq!(offset_of!(VmRuntime, trap_arg), RT_TRAP_ARG as usize);
         assert_eq!(offset_of!(VmCtx, memory), CTX_MEMORY as usize);
         assert_eq!(offset_of!(VmCtx, runtime), CTX_RUNTIME as usize);
         assert_eq!(offset_of!(VmCtx, funcs), CTX_FUNCS as usize);
         assert_eq!(offset_of!(VmCtx, globals), CTX_GLOBALS as usize);
         assert_eq!(offset_of!(VmCtx, tables), CTX_TABLES as usize);
         assert_eq!(offset_of!(VmCtx, type_ids), CTX_TYPE_IDS as usize);
+        assert_eq!(offset_of!(VmCtx, instance), CTX_INSTANCE as usize);
     }
 
     #[test]

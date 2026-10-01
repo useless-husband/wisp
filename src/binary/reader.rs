@@ -205,9 +205,6 @@ impl<'a> Reader<'a> {
     /// A length-prefixed UTF-8 name.
     pub fn name(&mut self) -> Result<String> {
         let len = self.u32()? as usize;
-        if self.pos > self.end {
-            return self.eof_err();
-        }
         if len > self.remaining() {
             return Err(Error::malformed(self.pos, "length out of bounds"));
         }

@@ -15,6 +15,8 @@ use std::collections::HashSet;
 pub struct FuncInfo {
     /// Maximum operand stack height, in values.
     pub max_height: u32,
+    /// Largest `max(params, results)` over the calls the function makes.
+    pub max_call_slots: u32,
 }
 
 pub fn validate(m: &ModuleData) -> Result<Vec<FuncInfo>> {
@@ -210,6 +212,7 @@ impl<'m> ModuleValidator<'m> {
             fv.run()?;
             infos.push(FuncInfo {
                 max_height: fv.max_height as u32,
+                max_call_slots: fv.max_call as u32,
             });
         }
         Ok(infos)
@@ -281,6 +284,7 @@ struct FuncValidator<'a, 'm> {
     vals: Vec<MaybeType>,
     ctrls: Vec<Ctrl>,
     max_height: usize,
+    max_call: usize,
     /// Start of the instruction being validated, for error offsets.
     at: usize,
     body_end: usize,
@@ -312,6 +316,7 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
             vals: Vec::new(),
             ctrls: Vec::new(),
             max_height: 0,
+            max_call: 0,
             at: body.code_start,
         })
     }
@@ -575,6 +580,7 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
                     return self.err(format!("unknown function {f}"));
                 }
                 let t = m.func_type(f).clone();
+                self.max_call = self.max_call.max(t.params.len()).max(t.results.len());
                 self.pop_vals(&t.params)?;
                 self.push_vals(&t.results);
             }
@@ -584,6 +590,7 @@ impl<'a, 'm> FuncValidator<'a, 'm> {
                     return self.err("type mismatch");
                 }
                 let t = self.mv.check_type_idx(ty, self.at)?.clone();
+                self.max_call = self.max_call.max(t.params.len()).max(t.results.len());
                 self.pop_expect(I32)?;
                 self.pop_vals(&t.params)?;
                 self.push_vals(&t.results);

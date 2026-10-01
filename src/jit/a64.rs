@@ -1,0 +1,881 @@
+//! An AArch64 instruction encoder: the subset the baseline compiler emits.
+//!
+//! Register numbers are 0..=31; 31 means `sp` or `xzr`/`wzr` depending on the instruction,
+//! exactly as in the architecture. `sf` selects 64-bit (`true`) or 32-bit operation.
+
+pub const SP: u8 = 31;
+pub const ZR: u8 = 31;
+pub const FP: u8 = 29;
+pub const LR: u8 = 30;
+
+/// Condition codes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Cond {
+    Eq = 0,
+    Ne = 1,
+    Hs = 2,
+    Lo = 3,
+    Mi = 4,
+    Pl = 5,
+    Vs = 6,
+    Vc = 7,
+    Hi = 8,
+    Ls = 9,
+    Ge = 10,
+    Lt = 11,
+    Gt = 12,
+    Le = 13,
+}
+
+impl Cond {
+    pub fn invert(self) -> Cond {
+        use Cond::*;
+        match self {
+            Eq => Ne,
+            Ne => Eq,
+            Hs => Lo,
+            Lo => Hs,
+            Mi => Pl,
+            Pl => Mi,
+            Vs => Vc,
+            Vc => Vs,
+            Hi => Ls,
+            Ls => Hi,
+            Ge => Lt,
+            Lt => Ge,
+            Gt => Le,
+            Le => Gt,
+        }
+    }
+}
+
+/// A position in the code that branches can target.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Label(pub u32);
+
+#[derive(Copy, Clone, Debug)]
+enum Fixup {
+    /// B / BL: imm26.
+    Imm26,
+    /// B.cond / CBZ / CBNZ: imm19 at bit 5.
+    Imm19,
+    /// TBZ / TBNZ: imm14 at bit 5.
+    Imm14,
+}
+
+/// Accumulates machine code with label fixups.
+#[derive(Default)]
+pub struct Asm {
+    pub code: Vec<u32>,
+    labels: Vec<Option<u32>>,
+    fixups: Vec<(u32, Label, Fixup)>,
+}
+
+#[inline]
+fn r(x: u8) -> u32 {
+    debug_assert!(x < 32);
+    x as u32 & 31
+}
+
+#[inline]
+fn sfb(sf: bool) -> u32 {
+    (sf as u32) << 31
+}
+
+/// Encode a logical (bitmask) immediate: returns `N:immr:imms` (13 bits) if `value` is
+/// representable for an operation of `width` (32 or 64) bits.
+pub fn logical_imm(value: u64, width: u32) -> Option<u32> {
+    let v = if width == 32 {
+        let v = value & 0xFFFF_FFFF;
+        v | (v << 32)
+    } else {
+        value
+    };
+    if v == 0 || v == u64::MAX {
+        return None;
+    }
+    // Smallest element size that repeats across the 64 bits.
+    let mut size = 64u32;
+    while size > 2 {
+        let half = size / 2;
+        let mask = (1u64 << half) - 1;
+        if (v & mask) != ((v >> half) & mask) {
+            break;
+        }
+        size = half;
+    }
+    let mask = if size == 64 {
+        u64::MAX
+    } else {
+        (1u64 << size) - 1
+    };
+    let elem = v & mask;
+    let ones = elem.count_ones();
+    let pattern = if ones == 64 {
+        u64::MAX
+    } else {
+        (1u64 << ones) - 1
+    };
+    let rotr = |x: u64, n: u32| -> u64 {
+        if n == 0 {
+            x
+        } else {
+            ((x >> n) | (x << (size - n))) & mask
+        }
+    };
+    let rot = (0..size).find(|&n| rotr(elem, n) == pattern)?;
+    let immr = (size - rot) % size;
+    let imms = ((!(size - 1) << 1) | (ones - 1)) & 0x3F;
+    let n = (size == 64) as u32;
+    Some((n << 12) | (immr << 6) | imms)
+}
+
+impl Asm {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn pos(&self) -> u32 {
+        self.code.len() as u32
+    }
+
+    pub fn emit(&mut self, i: u32) {
+        self.code.push(i);
+    }
+
+    pub fn new_label(&mut self) -> Label {
+        self.labels.push(None);
+        Label(self.labels.len() as u32 - 1)
+    }
+
+    pub fn bind(&mut self, l: Label) {
+        debug_assert!(self.labels[l.0 as usize].is_none(), "label bound twice");
+        self.labels[l.0 as usize] = Some(self.pos());
+    }
+
+    pub fn is_bound(&self, l: Label) -> bool {
+        self.labels[l.0 as usize].is_some()
+    }
+
+    pub fn label_pos(&self, l: Label) -> Option<u32> {
+        self.labels[l.0 as usize]
+    }
+
+    /// Code length, fixups and label state, for rolling back a function that fails.
+    pub fn checkpoint(&self) -> (usize, usize) {
+        (self.code.len(), self.fixups.len())
+    }
+
+    pub fn rollback(&mut self, cp: (usize, usize)) {
+        self.code.truncate(cp.0);
+        self.fixups.truncate(cp.1);
+        for l in self.labels.iter_mut() {
+            if l.is_some_and(|p| p as usize >= cp.0) {
+                *l = None;
+            }
+        }
+    }
+
+    /// Resolve all label references. Panics on an unbound label or an out-of-range branch.
+    pub fn finish(&mut self) {
+        for &(at, l, kind) in &self.fixups {
+            let target = self.labels[l.0 as usize].expect("unbound label");
+            let delta = target as i64 - at as i64;
+            let ins = &mut self.code[at as usize];
+            match kind {
+                Fixup::Imm26 => {
+                    assert!(
+                        (-(1 << 25)..(1 << 25)).contains(&delta),
+                        "branch out of range"
+                    );
+                    *ins |= (delta as u32) & 0x03FF_FFFF;
+                }
+                Fixup::Imm19 => {
+                    assert!(
+                        (-(1 << 18)..(1 << 18)).contains(&delta),
+                        "conditional branch out of range"
+                    );
+                    *ins |= ((delta as u32) & 0x7FFFF) << 5;
+                }
+                Fixup::Imm14 => {
+                    assert!(
+                        (-(1 << 13)..(1 << 13)).contains(&delta),
+                        "test branch out of range"
+                    );
+                    *ins |= ((delta as u32) & 0x3FFF) << 5;
+                }
+            }
+        }
+        self.fixups.clear();
+    }
+
+    pub fn bytes(&self) -> Vec<u8> {
+        self.code.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    // ---- branches ----
+
+    pub fn b(&mut self, l: Label) {
+        self.fixups.push((self.pos(), l, Fixup::Imm26));
+        self.emit(0x1400_0000);
+    }
+
+    pub fn bl(&mut self, l: Label) {
+        self.fixups.push((self.pos(), l, Fixup::Imm26));
+        self.emit(0x9400_0000);
+    }
+
+    /// BL to an instruction index fixed later by the caller (cross-function calls).
+    pub fn bl_placeholder(&mut self) -> u32 {
+        let p = self.pos();
+        self.emit(0x9400_0000);
+        p
+    }
+
+    pub fn patch_bl(&mut self, at: u32, target: u32) {
+        let delta = target as i64 - at as i64;
+        assert!((-(1 << 25)..(1 << 25)).contains(&delta));
+        self.code[at as usize] = 0x9400_0000 | ((delta as u32) & 0x03FF_FFFF);
+    }
+
+    pub fn b_cond(&mut self, c: Cond, l: Label) {
+        self.fixups.push((self.pos(), l, Fixup::Imm19));
+        self.emit(0x5400_0000 | c as u32);
+    }
+
+    pub fn cbz(&mut self, sf: bool, rt: u8, l: Label) {
+        self.fixups.push((self.pos(), l, Fixup::Imm19));
+        self.emit(sfb(sf) | 0x3400_0000 | r(rt));
+    }
+
+    pub fn cbnz(&mut self, sf: bool, rt: u8, l: Label) {
+        self.fixups.push((self.pos(), l, Fixup::Imm19));
+        self.emit(sfb(sf) | 0x3500_0000 | r(rt));
+    }
+
+    pub fn tbnz(&mut self, rt: u8, bit: u32, l: Label) {
+        self.fixups.push((self.pos(), l, Fixup::Imm14));
+        self.emit(((bit >> 5) << 31) | 0x3700_0000 | ((bit & 31) << 19) | r(rt));
+    }
+
+    pub fn br(&mut self, rn: u8) {
+        self.emit(0xD61F_0000 | (r(rn) << 5));
+    }
+
+    pub fn blr(&mut self, rn: u8) {
+        self.emit(0xD63F_0000 | (r(rn) << 5));
+    }
+
+    pub fn ret(&mut self) {
+        self.emit(0xD65F_03C0);
+    }
+
+    pub fn brk(&mut self, imm: u16) {
+        self.emit(0xD420_0000 | ((imm as u32) << 5));
+    }
+
+    // ---- moves ----
+
+    pub fn movz(&mut self, sf: bool, rd: u8, imm16: u16, shift: u32) {
+        self.emit(sfb(sf) | 0x5280_0000 | ((shift / 16) << 21) | ((imm16 as u32) << 5) | r(rd));
+    }
+
+    pub fn movn(&mut self, sf: bool, rd: u8, imm16: u16, shift: u32) {
+        self.emit(sfb(sf) | 0x1280_0000 | ((shift / 16) << 21) | ((imm16 as u32) << 5) | r(rd));
+    }
+
+    pub fn movk(&mut self, sf: bool, rd: u8, imm16: u16, shift: u32) {
+        self.emit(sfb(sf) | 0x7280_0000 | ((shift / 16) << 21) | ((imm16 as u32) << 5) | r(rd));
+    }
+
+    /// Load any constant into `rd` with the shortest MOVZ/MOVN/MOVK/ORR sequence.
+    pub fn mov_imm(&mut self, sf: bool, rd: u8, value: u64) {
+        let v = if sf { value } else { value & 0xFFFF_FFFF };
+        let width = if sf { 64 } else { 32 };
+        let chunks = width / 16;
+        let half = |i: u32| ((v >> (16 * i)) & 0xFFFF) as u16;
+        let zeros = (0..chunks).filter(|&i| half(i) == 0).count() as u32;
+        let ones = (0..chunks).filter(|&i| half(i) == 0xFFFF).count() as u32;
+        if zeros == chunks {
+            self.movz(sf, rd, 0, 0);
+            return;
+        }
+        if ones > zeros {
+            // MOVN for mostly-ones values.
+            let mut first = true;
+            for i in 0..chunks {
+                let h = half(i);
+                if h == 0xFFFF {
+                    continue;
+                }
+                if first {
+                    self.movn(sf, rd, !h, 16 * i);
+                    first = false;
+                } else {
+                    self.movk(sf, rd, h, 16 * i);
+                }
+            }
+            if first {
+                self.movn(sf, rd, 0, 0);
+            }
+            return;
+        }
+        if chunks - zeros > 2
+            && let Some(enc) = logical_imm(v, width)
+        {
+            // ORR rd, zr, #imm
+            self.emit(sfb(sf) | 0x3200_0000 | (enc << 10) | (r(ZR) << 5) | r(rd));
+            return;
+        }
+        let mut first = true;
+        for i in 0..chunks {
+            let h = half(i);
+            if h == 0 {
+                continue;
+            }
+            if first {
+                self.movz(sf, rd, h, 16 * i);
+                first = false;
+            } else {
+                self.movk(sf, rd, h, 16 * i);
+            }
+        }
+    }
+
+    /// `mov rd, rm` between general registers (not SP).
+    pub fn mov(&mut self, sf: bool, rd: u8, rm: u8) {
+        self.orr(sf, rd, ZR, rm);
+    }
+
+    /// `mov rd, sp` / `mov sp, rn` (ADD #0).
+    pub fn mov_sp(&mut self, rd: u8, rn: u8) {
+        self.add_imm(true, rd, rn, 0);
+    }
+
+    // ---- arithmetic ----
+
+    fn addsub_imm(&mut self, base: u32, sf: bool, rd: u8, rn: u8, imm: u32) {
+        let (imm12, sh) = if imm < 4096 {
+            (imm, 0)
+        } else {
+            assert!(
+                imm & 0xFFF == 0 && imm < (1 << 24),
+                "immediate {imm:#x} not encodable"
+            );
+            (imm >> 12, 1)
+        };
+        self.emit(sfb(sf) | base | (sh << 22) | (imm12 << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    /// Whether `imm` fits an ADD/SUB immediate.
+    pub fn addsub_imm_ok(imm: u64) -> bool {
+        imm < 4096 || (imm & 0xFFF == 0 && imm < (1 << 24))
+    }
+
+    pub fn add_imm(&mut self, sf: bool, rd: u8, rn: u8, imm: u32) {
+        self.addsub_imm(0x1100_0000, sf, rd, rn, imm);
+    }
+
+    pub fn adds_imm(&mut self, sf: bool, rd: u8, rn: u8, imm: u32) {
+        self.addsub_imm(0x3100_0000, sf, rd, rn, imm);
+    }
+
+    pub fn sub_imm(&mut self, sf: bool, rd: u8, rn: u8, imm: u32) {
+        self.addsub_imm(0x5100_0000, sf, rd, rn, imm);
+    }
+
+    pub fn subs_imm(&mut self, sf: bool, rd: u8, rn: u8, imm: u32) {
+        self.addsub_imm(0x7100_0000, sf, rd, rn, imm);
+    }
+
+    pub fn cmp_imm(&mut self, sf: bool, rn: u8, imm: u32) {
+        self.subs_imm(sf, ZR, rn, imm);
+    }
+
+    pub fn cmn_imm(&mut self, sf: bool, rn: u8, imm: u32) {
+        self.adds_imm(sf, ZR, rn, imm);
+    }
+
+    fn addsub_reg(&mut self, base: u32, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.emit(sfb(sf) | base | (r(rm) << 16) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn add(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.addsub_reg(0x0B00_0000, sf, rd, rn, rm);
+    }
+
+    pub fn adds(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.addsub_reg(0x2B00_0000, sf, rd, rn, rm);
+    }
+
+    pub fn sub(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.addsub_reg(0x4B00_0000, sf, rd, rn, rm);
+    }
+
+    pub fn subs(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.addsub_reg(0x6B00_0000, sf, rd, rn, rm);
+    }
+
+    pub fn cmp(&mut self, sf: bool, rn: u8, rm: u8) {
+        self.subs(sf, ZR, rn, rm);
+    }
+
+    /// `add rd, rn, rm, lsl #sh`
+    pub fn add_lsl(&mut self, sf: bool, rd: u8, rn: u8, rm: u8, sh: u32) {
+        self.emit(sfb(sf) | 0x0B00_0000 | (r(rm) << 16) | (sh << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    /// `adr rd, #off` (byte offset from this instruction).
+    pub fn adr(&mut self, rd: u8, off: i32) {
+        let imm = off as u32;
+        self.emit(0x1000_0000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | r(rd));
+    }
+
+    pub fn neg(&mut self, sf: bool, rd: u8, rm: u8) {
+        self.sub(sf, rd, ZR, rm);
+    }
+
+    /// `add xd, xn|sp, xm` (extended register form, UXTX), usable with SP as `rn`.
+    pub fn add_ext(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.emit(0x8B20_6000 | (r(rm) << 16) | (r(rn) << 5) | r(rd));
+    }
+
+    /// `sub xd|sp, xn|sp, xm` (extended register form, UXTX).
+    pub fn sub_ext(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.emit(0xCB20_6000 | (r(rm) << 16) | (r(rn) << 5) | r(rd));
+    }
+
+    /// `cmp xn|sp, xm` (extended register form, UXTX).
+    pub fn cmp_ext(&mut self, rn: u8, rm: u8) {
+        self.emit(0xEB20_6000 | (r(rm) << 16) | (r(rn) << 5) | r(ZR));
+    }
+
+    fn logical_reg(&mut self, base: u32, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.emit(sfb(sf) | base | (r(rm) << 16) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn and(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.logical_reg(0x0A00_0000, sf, rd, rn, rm);
+    }
+
+    pub fn orr(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.logical_reg(0x2A00_0000, sf, rd, rn, rm);
+    }
+
+    pub fn eor(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.logical_reg(0x4A00_0000, sf, rd, rn, rm);
+    }
+
+    pub fn tst(&mut self, sf: bool, rn: u8, rm: u8) {
+        self.logical_reg(0x6A00_0000, sf, ZR, rn, rm);
+    }
+
+    /// AND/ORR/EOR with a bitmask immediate; `opc` 0 = AND, 1 = ORR, 2 = EOR, 3 = ANDS.
+    pub fn logical_imm(&mut self, opc: u32, sf: bool, rd: u8, rn: u8, enc: u32) {
+        self.emit(sfb(sf) | 0x1200_0000 | (opc << 29) | (enc << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    fn dp2(&mut self, op: u32, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.emit(sfb(sf) | 0x1AC0_0000 | (r(rm) << 16) | (op << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn udiv(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.dp2(0b000010, sf, rd, rn, rm);
+    }
+
+    pub fn sdiv(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.dp2(0b000011, sf, rd, rn, rm);
+    }
+
+    pub fn lslv(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.dp2(0b001000, sf, rd, rn, rm);
+    }
+
+    pub fn lsrv(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.dp2(0b001001, sf, rd, rn, rm);
+    }
+
+    pub fn asrv(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.dp2(0b001010, sf, rd, rn, rm);
+    }
+
+    pub fn rorv(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.dp2(0b001011, sf, rd, rn, rm);
+    }
+
+    fn dp1(&mut self, op: u32, sf: bool, rd: u8, rn: u8) {
+        self.emit(sfb(sf) | 0x5AC0_0000 | (op << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn rbit(&mut self, sf: bool, rd: u8, rn: u8) {
+        self.dp1(0b000000, sf, rd, rn);
+    }
+
+    pub fn clz(&mut self, sf: bool, rd: u8, rn: u8) {
+        self.dp1(0b000100, sf, rd, rn);
+    }
+
+    pub fn madd(&mut self, sf: bool, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.emit(sfb(sf) | 0x1B00_0000 | (r(rm) << 16) | (r(ra) << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn msub(&mut self, sf: bool, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.emit(sfb(sf) | 0x1B00_8000 | (r(rm) << 16) | (r(ra) << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn mul(&mut self, sf: bool, rd: u8, rn: u8, rm: u8) {
+        self.madd(sf, rd, rn, rm, ZR);
+    }
+
+    fn bitfield(&mut self, base: u32, sf: bool, rd: u8, rn: u8, immr: u32, imms: u32) {
+        let n = if sf { 1 << 22 } else { 0 };
+        self.emit(sfb(sf) | base | n | (immr << 16) | (imms << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn sbfm(&mut self, sf: bool, rd: u8, rn: u8, immr: u32, imms: u32) {
+        self.bitfield(0x1300_0000, sf, rd, rn, immr, imms);
+    }
+
+    pub fn ubfm(&mut self, sf: bool, rd: u8, rn: u8, immr: u32, imms: u32) {
+        self.bitfield(0x5300_0000, sf, rd, rn, immr, imms);
+    }
+
+    pub fn lsl_imm(&mut self, sf: bool, rd: u8, rn: u8, sh: u32) {
+        let w = if sf { 64 } else { 32 };
+        let sh = sh % w;
+        self.ubfm(sf, rd, rn, (w - sh) % w, w - 1 - sh);
+    }
+
+    pub fn lsr_imm(&mut self, sf: bool, rd: u8, rn: u8, sh: u32) {
+        let w = if sf { 64 } else { 32 };
+        self.ubfm(sf, rd, rn, sh % w, w - 1);
+    }
+
+    pub fn asr_imm(&mut self, sf: bool, rd: u8, rn: u8, sh: u32) {
+        let w = if sf { 64 } else { 32 };
+        self.sbfm(sf, rd, rn, sh % w, w - 1);
+    }
+
+    pub fn ror_imm(&mut self, sf: bool, rd: u8, rn: u8, sh: u32) {
+        let w = if sf { 64 } else { 32 };
+        let base = if sf { 0x93C0_0000 } else { 0x1380_0000 };
+        self.emit(base | (r(rn) << 16) | ((sh % w) << 10) | (r(rn) << 5) | r(rd));
+    }
+
+    /// Sign-extend the low `bits` (8, 16 or 32) of `rn`.
+    pub fn sxt(&mut self, sf: bool, rd: u8, rn: u8, bits: u32) {
+        self.sbfm(sf, rd, rn, 0, bits - 1);
+    }
+
+    /// Zero-extend the low `bits` (8 or 16) of `rn`.
+    pub fn uxt(&mut self, rd: u8, rn: u8, bits: u32) {
+        self.ubfm(false, rd, rn, 0, bits - 1);
+    }
+
+    pub fn csel(&mut self, sf: bool, rd: u8, rn: u8, rm: u8, c: Cond) {
+        self.emit(
+            sfb(sf) | 0x1A80_0000 | (r(rm) << 16) | ((c as u32) << 12) | (r(rn) << 5) | r(rd),
+        );
+    }
+
+    pub fn csinc(&mut self, sf: bool, rd: u8, rn: u8, rm: u8, c: Cond) {
+        self.emit(
+            sfb(sf) | 0x1A80_0400 | (r(rm) << 16) | ((c as u32) << 12) | (r(rn) << 5) | r(rd),
+        );
+    }
+
+    pub fn cset(&mut self, sf: bool, rd: u8, c: Cond) {
+        self.csinc(sf, rd, ZR, ZR, c.invert());
+    }
+
+    // ---- loads and stores ----
+
+    /// Unsigned-offset form: `base` is the encoding for offset 0, `scale` the access size
+    /// log2. Falls back to the unscaled (LDUR/STUR) form for small unaligned offsets.
+    /// Returns false if the offset cannot be encoded.
+    fn ldst(&mut self, base: u32, scale: u32, rt: u8, rn: u8, off: i64) -> bool {
+        if off >= 0 && off % (1 << scale) == 0 && (off >> scale) < 4096 {
+            self.emit(base | (((off >> scale) as u32) << 10) | (r(rn) << 5) | r(rt));
+            return true;
+        }
+        if (-256..256).contains(&off) {
+            let unscaled = base & !(1 << 24);
+            self.emit(unscaled | (((off as u32) & 0x1FF) << 12) | (r(rn) << 5) | r(rt));
+            return true;
+        }
+        false
+    }
+
+    /// Register-offset form `[rn, rm{, lsl #scale}]` (rm 64-bit).
+    fn ldst_reg(&mut self, base: u32, rt: u8, rn: u8, rm: u8, shifted: bool) {
+        let enc = (base & !(1 << 24))
+            | (1 << 21)
+            | (0b011 << 13)
+            | ((shifted as u32) << 12)
+            | (0b10 << 10);
+        self.emit(enc | (r(rm) << 16) | (r(rn) << 5) | r(rt));
+    }
+
+    pub fn try_ldst(&mut self, k: Mem, rt: u8, rn: u8, off: i64) -> bool {
+        let (base, scale) = k.enc();
+        self.ldst(base, scale, rt, rn, off)
+    }
+
+    /// Load/store with an immediate offset; `tmp` is used for offsets out of range.
+    pub fn ldst_off(&mut self, k: Mem, rt: u8, rn: u8, off: i64, tmp: u8) {
+        if self.try_ldst(k, rt, rn, off) {
+            return;
+        }
+        self.mov_imm(true, tmp, off as u64);
+        self.add_ext(tmp, rn, tmp);
+        assert!(self.try_ldst(k, rt, tmp, 0));
+    }
+
+    /// Load/store `[rn, rm]` or `[rn, rm, lsl #size]`.
+    pub fn ldst_regoff(&mut self, k: Mem, rt: u8, rn: u8, rm: u8, scaled: bool) {
+        let (base, _) = k.enc();
+        self.ldst_reg(base, rt, rn, rm, scaled);
+    }
+
+    fn pair(&mut self, base: u32, scale: u32, rt: u8, rt2: u8, rn: u8, off: i32) {
+        let imm7 = ((off >> scale) as u32) & 0x7F;
+        self.emit(base | (imm7 << 15) | (r(rt2) << 10) | (r(rn) << 5) | r(rt));
+    }
+
+    /// `stp xt, xt2, [rn, #off]!`
+    pub fn stp_pre(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0xA980_0000, 3, rt, rt2, rn, off);
+    }
+
+    /// `ldp xt, xt2, [rn], #off`
+    pub fn ldp_post(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0xA8C0_0000, 3, rt, rt2, rn, off);
+    }
+
+    /// `stp xt, xt2, [rn, #off]`
+    pub fn stp(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0xA900_0000, 3, rt, rt2, rn, off);
+    }
+
+    /// `ldp xt, xt2, [rn, #off]`
+    pub fn ldp(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0xA940_0000, 3, rt, rt2, rn, off);
+    }
+
+    /// `stp dt, dt2, [rn, #off]!`
+    pub fn stp_d_pre(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0x6D80_0000, 3, rt, rt2, rn, off);
+    }
+
+    /// `ldp dt, dt2, [rn], #off`
+    pub fn ldp_d_post(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0x6CC0_0000, 3, rt, rt2, rn, off);
+    }
+
+    /// `stp dt, dt2, [rn, #off]`
+    pub fn stp_d(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0x6D00_0000, 3, rt, rt2, rn, off);
+    }
+
+    /// `ldp dt, dt2, [rn, #off]`
+    pub fn ldp_d(&mut self, rt: u8, rt2: u8, rn: u8, off: i32) {
+        self.pair(0x6D40_0000, 3, rt, rt2, rn, off);
+    }
+
+    // ---- floating point ----
+
+    fn fp1(&mut self, dbl: bool, op: u32, rd: u8, rn: u8) {
+        self.emit(0x1E20_4000 | ((dbl as u32) << 22) | (op << 15) | (r(rn) << 5) | r(rd));
+    }
+
+    pub fn fmov(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b000000, rd, rn);
+    }
+
+    pub fn fabs(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b000001, rd, rn);
+    }
+
+    pub fn fneg(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b000010, rd, rn);
+    }
+
+    pub fn fsqrt(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b000011, rd, rn);
+    }
+
+    /// FCVT: single to double when `to_double`, else double to single.
+    pub fn fcvt(&mut self, to_double: bool, rd: u8, rn: u8) {
+        if to_double {
+            self.fp1(false, 0b000101, rd, rn);
+        } else {
+            self.fp1(true, 0b000100, rd, rn);
+        }
+    }
+
+    pub fn frintn(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b001000, rd, rn);
+    }
+
+    pub fn frintp(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b001001, rd, rn);
+    }
+
+    pub fn frintm(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b001010, rd, rn);
+    }
+
+    pub fn frintz(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fp1(dbl, 0b001011, rd, rn);
+    }
+
+    /// FP 2-source: 0 FMUL, 1 FDIV, 2 FADD, 3 FSUB, 4 FMAX, 5 FMIN.
+    pub fn fp2(&mut self, dbl: bool, op: u32, rd: u8, rn: u8, rm: u8) {
+        self.emit(
+            0x1E20_0800 | ((dbl as u32) << 22) | (r(rm) << 16) | (op << 12) | (r(rn) << 5) | r(rd),
+        );
+    }
+
+    pub fn fcmp(&mut self, dbl: bool, rn: u8, rm: u8) {
+        self.emit(0x1E20_2000 | ((dbl as u32) << 22) | (r(rm) << 16) | (r(rn) << 5));
+    }
+
+    pub fn fcsel(&mut self, dbl: bool, rd: u8, rn: u8, rm: u8, c: Cond) {
+        self.emit(
+            0x1E20_0C00
+                | ((dbl as u32) << 22)
+                | (r(rm) << 16)
+                | ((c as u32) << 12)
+                | (r(rn) << 5)
+                | r(rd),
+        );
+    }
+
+    fn fpint(&mut self, sf: bool, dbl: bool, rmode: u32, op: u32, rd: u8, rn: u8) {
+        self.emit(
+            sfb(sf)
+                | 0x1E20_0000
+                | ((dbl as u32) << 22)
+                | (rmode << 19)
+                | (op << 16)
+                | (r(rn) << 5)
+                | r(rd),
+        );
+    }
+
+    /// Signed integer (`sf`: 64-bit) to float (`dbl`: double).
+    pub fn scvtf(&mut self, sf: bool, dbl: bool, rd: u8, rn: u8) {
+        self.fpint(sf, dbl, 0b00, 0b010, rd, rn);
+    }
+
+    pub fn ucvtf(&mut self, sf: bool, dbl: bool, rd: u8, rn: u8) {
+        self.fpint(sf, dbl, 0b00, 0b011, rd, rn);
+    }
+
+    /// Float to signed integer, rounding toward zero (saturating).
+    pub fn fcvtzs(&mut self, sf: bool, dbl: bool, rd: u8, rn: u8) {
+        self.fpint(sf, dbl, 0b11, 0b000, rd, rn);
+    }
+
+    pub fn fcvtzu(&mut self, sf: bool, dbl: bool, rd: u8, rn: u8) {
+        self.fpint(sf, dbl, 0b11, 0b001, rd, rn);
+    }
+
+    /// Move float bits to a general register (`fmov wd, sn` / `fmov xd, dn`).
+    pub fn fmov_to_gpr(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fpint(dbl, dbl, 0b00, 0b110, rd, rn);
+    }
+
+    /// Move general register bits to a float register.
+    pub fn fmov_from_gpr(&mut self, dbl: bool, rd: u8, rn: u8) {
+        self.fpint(dbl, dbl, 0b00, 0b111, rd, rn);
+    }
+
+    /// `cnt vd.8b, vn.8b`
+    pub fn cnt8b(&mut self, rd: u8, rn: u8) {
+        self.emit(0x0E20_5800 | (r(rn) << 5) | r(rd));
+    }
+
+    /// `addv bd, vn.8b`
+    pub fn addv8b(&mut self, rd: u8, rn: u8) {
+        self.emit(0x0E31_B800 | (r(rn) << 5) | r(rd));
+    }
+
+    /// `bit vd.8b, vn.8b, vm.8b`: insert bits of vn where vm is set.
+    pub fn bit8b(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.emit(0x2EA0_1C00 | (r(rm) << 16) | (r(rn) << 5) | r(rd));
+    }
+}
+
+/// Memory access kinds for loads and stores.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Mem {
+    LdrX,
+    StrX,
+    LdrW,
+    StrW,
+    LdrH,
+    LdrShW,
+    LdrShX,
+    StrH,
+    LdrB,
+    LdrSbW,
+    LdrSbX,
+    StrB,
+    LdrSwX,
+    LdrS,
+    StrS,
+    LdrD,
+    StrD,
+}
+
+impl Mem {
+    /// (unsigned-offset encoding with offset 0, log2 of access size)
+    fn enc(self) -> (u32, u32) {
+        use Mem::*;
+        match self {
+            LdrX => (0xF940_0000, 3),
+            StrX => (0xF900_0000, 3),
+            LdrW => (0xB940_0000, 2),
+            StrW => (0xB900_0000, 2),
+            LdrH => (0x7940_0000, 1),
+            LdrShW => (0x79C0_0000, 1),
+            LdrShX => (0x7980_0000, 1),
+            StrH => (0x7900_0000, 1),
+            LdrB => (0x3940_0000, 0),
+            LdrSbW => (0x39C0_0000, 0),
+            LdrSbX => (0x3980_0000, 0),
+            StrB => (0x3900_0000, 0),
+            LdrSwX => (0xB980_0000, 2),
+            LdrS => (0xBD40_0000, 2),
+            StrS => (0xBD00_0000, 2),
+            LdrD => (0xFD40_0000, 3),
+            StrD => (0xFD00_0000, 3),
+        }
+    }
+
+    pub fn size(self) -> u32 {
+        1 << self.enc().1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_immediates() {
+        // Values checked against LLVM's encoder.
+        assert_eq!(logical_imm(0xFF, 64), Some(0b1_000000_000111));
+        assert_eq!(
+            logical_imm(0x8000_0000_0000_0000, 64),
+            Some(0b1_000001_000000)
+        );
+        assert_eq!(logical_imm(0x5555_5555, 32), Some(0b0_000000_111100));
+        assert_eq!(logical_imm(0xFFFF_0000, 32), Some(0b0_010000_001111));
+        assert_eq!(logical_imm(0, 32), None);
+        assert_eq!(logical_imm(0xFFFF_FFFF, 32), None);
+        assert_eq!(logical_imm(0x1234, 32), None);
+    }
+}
