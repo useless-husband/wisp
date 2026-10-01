@@ -1,0 +1,6 @@
+/target
+/tests/programs/target
+/tools/*/target
+/bench/results/*.raw
+*.wasm
+.DS_Store

@@ -1,0 +1,21 @@
+[package]
+name = "wisp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A compact WebAssembly runtime: decoder, validator, interpreter, AArch64 baseline compiler and WASI preview 1"
+license = "MIT"
+repository = "https://github.com/useless-husband/wisp"
+readme = "README.md"
+keywords = ["webassembly", "wasm", "jit", "interpreter", "wasi"]
+categories = ["wasm", "compilers"]
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+wast = "260"
+wat = "1"
+
+[profile.release]
+debug = 1
