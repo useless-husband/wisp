@@ -65,8 +65,8 @@ pub(crate) unsafe fn execute(
         st.depth += 1;
         let mut frames: Vec<Frame> = Vec::new();
 
-        let mut mbase: *mut u8 = ptr::null_mut();
-        let mut msize: u64 = 0;
+        let mut mbase: *mut u8;
+        let mut msize: u64;
         macro_rules! reload {
             () => {{
                 let m = (*vmctx).memory;

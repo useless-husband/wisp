@@ -1,0 +1,45 @@
+# Guest programs compiled to wasm32-wasip1 (and natively, to compare outputs).
+[package]
+name = "wisp-programs"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+miniz_oxide = "0.8"
+serde_json = "1"
+
+[[bin]]
+name = "hello"
+path = "src/hello.rs"
+[[bin]]
+name = "primes"
+path = "src/primes.rs"
+[[bin]]
+name = "raytrace"
+path = "src/raytrace.rs"
+[[bin]]
+name = "compress"
+path = "src/compress.rs"
+[[bin]]
+name = "json"
+path = "src/json.rs"
+[[bin]]
+name = "matmul"
+path = "src/matmul.rs"
+[[bin]]
+name = "fib"
+path = "src/fib.rs"
+[[bin]]
+name = "fileio"
+path = "src/fileio.rs"
+[[bin]]
+name = "sandbox"
+path = "src/sandbox.rs"
+
+[profile.release]
+opt-level = 3
+debug = false
+panic = "abort"

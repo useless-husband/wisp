@@ -124,7 +124,7 @@ impl<'m> ModuleValidator<'m> {
             )?;
         }
         // Function references declared outside function bodies (C.refs).
-        let mut note_refs = |e: &ConstExpr, refs: &mut HashSet<u32>| {
+        let note_refs = |e: &ConstExpr, refs: &mut HashSet<u32>| {
             for op in &e.ops {
                 if let Op::RefFunc(f) = op {
                     refs.insert(*f);

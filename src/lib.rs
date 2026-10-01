@@ -28,6 +28,7 @@ pub mod num;
 pub mod runtime;
 pub mod types;
 pub mod validate;
+pub mod wasi;
 
 pub use config::{Config, Engine, Strategy};
 pub use error::{Error, Result, Trap, TrapCode};
