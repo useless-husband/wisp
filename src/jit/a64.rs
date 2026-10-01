@@ -879,3 +879,466 @@ mod tests {
         assert_eq!(logical_imm(0x1234, 32), None);
     }
 }
+
+/// Cross-checks the encoder against the system assembler (clang). macOS only: it parses
+/// the Mach-O object clang produces.
+#[cfg(all(test, target_os = "macos"))]
+mod assembler_check {
+    use super::*;
+    use std::process::Command;
+
+    /// Extract the bytes of `__TEXT,__text` from a 64-bit Mach-O object.
+    fn text_section(obj: &[u8]) -> Vec<u8> {
+        let u32_at = |o: usize| u32::from_le_bytes(obj[o..o + 4].try_into().unwrap());
+        let u64_at = |o: usize| u64::from_le_bytes(obj[o..o + 8].try_into().unwrap());
+        assert_eq!(u32_at(0), 0xFEED_FACF, "not a 64-bit Mach-O");
+        let ncmds = u32_at(16) as usize;
+        let mut off = 32;
+        for _ in 0..ncmds {
+            let (cmd, size) = (u32_at(off), u32_at(off + 4) as usize);
+            if cmd == 0x19 {
+                let nsects = u32_at(off + 64) as usize;
+                for s in 0..nsects {
+                    let so = off + 72 + 80 * s;
+                    let name = std::str::from_utf8(&obj[so..so + 16])
+                        .unwrap()
+                        .trim_end_matches('\0');
+                    if name == "__text" {
+                        let sz = u64_at(so + 40) as usize;
+                        let fo = u32_at(so + 48) as usize;
+                        return obj[fo..fo + sz].to_vec();
+                    }
+                }
+            }
+            off += size;
+        }
+        panic!("no __text section");
+    }
+
+    #[test]
+    fn encodings_match_clang() {
+        let mut cases: Vec<(&str, Box<dyn Fn(&mut Asm)>)> = Vec::new();
+        macro_rules! case {
+            ($text:expr, |$a:ident| $e:expr) => {
+                cases.push(($text, Box::new(|$a: &mut Asm| $e)));
+            };
+        }
+        case!("add w1, w2, #4095", |a| a.add_imm(false, 1, 2, 4095));
+        case!("add x3, sp, #16", |a| a.add_imm(true, 3, SP, 16));
+        case!("add sp, x16, #0", |a| a.mov_sp(SP, 16));
+        case!("sub x0, x1, #1, lsl #12", |a| a.sub_imm(true, 0, 1, 4096));
+        case!("subs w5, w6, #7", |a| a.subs_imm(false, 5, 6, 7));
+        case!("cmp x7, #100", |a| a.cmp_imm(true, 7, 100));
+        case!("cmn w2, #1", |a| a.cmn_imm(false, 2, 1));
+        case!("add x1, x2, x3", |a| a.add(true, 1, 2, 3));
+        case!("adds w1, w2, w3", |a| a.adds(false, 1, 2, 3));
+        case!("sub w4, w5, w6", |a| a.sub(false, 4, 5, 6));
+        case!("cmp x16, x17", |a| a.cmp(true, 16, 17));
+        case!("neg w0, w9", |a| a.neg(false, 0, 9));
+        case!("add x17, sp, x16", |a| a.add_ext(17, SP, 16));
+        case!("sub sp, sp, x16", |a| a.sub_ext(SP, SP, 16));
+        case!("sub x16, sp, x17", |a| a.sub_ext(16, SP, 17));
+        case!("add x16, x16, x5, lsl #2", |a| a
+            .add_lsl(true, 16, 16, 5, 2));
+        case!("and w1, w2, w3", |a| a.and(false, 1, 2, 3));
+        case!("orr x1, xzr, x2", |a| a.mov(true, 1, 2));
+        case!("eor x8, x9, x10", |a| a.eor(true, 8, 9, 10));
+        case!("tst w3, w4", |a| a.tst(false, 3, 4));
+        case!("and w0, w0, #0xff", |a| a.logical_imm(
+            0,
+            false,
+            0,
+            0,
+            logical_imm(0xFF, 32).unwrap()
+        ));
+        case!("orr x1, x2, #0x8000000000000000", |a| a.logical_imm(
+            1,
+            true,
+            1,
+            2,
+            logical_imm(0x8000_0000_0000_0000, 64).unwrap()
+        ));
+        case!("eor w3, w4, #0x55555555", |a| a.logical_imm(
+            2,
+            false,
+            3,
+            4,
+            logical_imm(0x5555_5555, 32).unwrap()
+        ));
+        case!("udiv w1, w2, w3", |a| a.udiv(false, 1, 2, 3));
+        case!("sdiv x1, x2, x3", |a| a.sdiv(true, 1, 2, 3));
+        case!("lsl w1, w2, w3", |a| a.lslv(false, 1, 2, 3));
+        case!("lsr x1, x2, x3", |a| a.lsrv(true, 1, 2, 3));
+        case!("asr w1, w2, w3", |a| a.asrv(false, 1, 2, 3));
+        case!("ror x1, x2, x3", |a| a.rorv(true, 1, 2, 3));
+        case!("rbit w5, w6", |a| a.rbit(false, 5, 6));
+        case!("clz x5, x6", |a| a.clz(true, 5, 6));
+        case!("madd w1, w2, w3, w4", |a| a.madd(false, 1, 2, 3, 4));
+        case!("msub x1, x2, x3, x4", |a| a.msub(true, 1, 2, 3, 4));
+        case!("mul x1, x2, x3", |a| a.mul(true, 1, 2, 3));
+        case!("lsl w1, w2, #5", |a| a.lsl_imm(false, 1, 2, 5));
+        case!("lsl x1, x2, #63", |a| a.lsl_imm(true, 1, 2, 63));
+        case!("lsr w1, w2, #31", |a| a.lsr_imm(false, 1, 2, 31));
+        case!("lsr x26, x26, #16", |a| a.lsr_imm(true, 26, 26, 16));
+        case!("asr x1, x2, #3", |a| a.asr_imm(true, 1, 2, 3));
+        case!("ror w1, w2, #7", |a| a.ror_imm(false, 1, 2, 7));
+        case!("ror x1, x2, #60", |a| a.ror_imm(true, 1, 2, 60));
+        case!("sxtb w1, w2", |a| a.sxt(false, 1, 2, 8));
+        case!("sxth x1, w2", |a| a.sxt(true, 1, 2, 16));
+        case!("sxtw x1, w2", |a| a.sxt(true, 1, 2, 32));
+        case!("uxtb w1, w2", |a| a.uxt(1, 2, 8));
+        case!("uxth w1, w2", |a| a.uxt(1, 2, 16));
+        case!("csel w1, w2, w3, ne", |a| a.csel(false, 1, 2, 3, Cond::Ne));
+        case!("csel x1, x2, x3, lt", |a| a.csel(true, 1, 2, 3, Cond::Lt));
+        case!("cset w1, hi", |a| a.cset(false, 1, Cond::Hi));
+        case!("cset w16, ls", |a| a.cset(false, 16, Cond::Ls));
+        case!("movz w1, #0x1234", |a| a.movz(false, 1, 0x1234, 0));
+        case!("movz x1, #0x8000, lsl #48", |a| a.movz(true, 1, 0x8000, 48));
+        case!("movk x1, #0xbeef, lsl #16", |a| a.movk(true, 1, 0xBEEF, 16));
+        case!("movn w2, #0", |a| a.movn(false, 2, 0, 0));
+        case!("ldr x1, [x2, #8]", |a| assert!(a.try_ldst(
+            Mem::LdrX,
+            1,
+            2,
+            8
+        )));
+        case!("ldr x1, [sp, #32760]", |a| assert!(a.try_ldst(
+            Mem::LdrX,
+            1,
+            SP,
+            32760
+        )));
+        case!("str x28, [sp, #24]", |a| assert!(a.try_ldst(
+            Mem::StrX,
+            28,
+            SP,
+            24
+        )));
+        case!("ldur x4, [x16, #-16]", |a| assert!(a.try_ldst(
+            Mem::LdrX,
+            4,
+            16,
+            -16
+        )));
+        case!("ldr w1, [x2, #4]", |a| assert!(a.try_ldst(
+            Mem::LdrW,
+            1,
+            2,
+            4
+        )));
+        case!("ldur w1, [x2, #3]", |a| assert!(a.try_ldst(
+            Mem::LdrW,
+            1,
+            2,
+            3
+        )));
+        case!("str w1, [x2, #4092]", |a| assert!(a.try_ldst(
+            Mem::StrW,
+            1,
+            2,
+            4092
+        )));
+        case!("ldrh w1, [x2, #2]", |a| assert!(a.try_ldst(
+            Mem::LdrH,
+            1,
+            2,
+            2
+        )));
+        case!("ldrsh w1, [x2]", |a| assert!(a.try_ldst(
+            Mem::LdrShW,
+            1,
+            2,
+            0
+        )));
+        case!("ldrsh x1, [x2]", |a| assert!(a.try_ldst(
+            Mem::LdrShX,
+            1,
+            2,
+            0
+        )));
+        case!("strh w1, [x2, #6]", |a| assert!(a.try_ldst(
+            Mem::StrH,
+            1,
+            2,
+            6
+        )));
+        case!("ldrb w1, [x2, #1]", |a| assert!(a.try_ldst(
+            Mem::LdrB,
+            1,
+            2,
+            1
+        )));
+        case!("ldrsb w1, [x2]", |a| assert!(a.try_ldst(
+            Mem::LdrSbW,
+            1,
+            2,
+            0
+        )));
+        case!("ldrsb x1, [x2]", |a| assert!(a.try_ldst(
+            Mem::LdrSbX,
+            1,
+            2,
+            0
+        )));
+        case!("strb w1, [x2, #4095]", |a| assert!(a.try_ldst(
+            Mem::StrB,
+            1,
+            2,
+            4095
+        )));
+        case!("ldrsw x1, [x2, #4]", |a| assert!(a.try_ldst(
+            Mem::LdrSwX,
+            1,
+            2,
+            4
+        )));
+        case!("ldr s1, [sp, #8]", |a| assert!(a.try_ldst(
+            Mem::LdrS,
+            1,
+            SP,
+            8
+        )));
+        case!("str s1, [x29, #16]", |a| assert!(a.try_ldst(
+            Mem::StrS,
+            1,
+            FP,
+            16
+        )));
+        case!("ldr d7, [x2, #24]", |a| assert!(a.try_ldst(
+            Mem::LdrD,
+            7,
+            2,
+            24
+        )));
+        case!("str d7, [sp, #40]", |a| assert!(a.try_ldst(
+            Mem::StrD,
+            7,
+            SP,
+            40
+        )));
+        case!("ldr w1, [x27, x2]", |a| a.ldst_regoff(
+            Mem::LdrW,
+            1,
+            27,
+            2,
+            false
+        ));
+        case!("ldr x9, [x16, x10, lsl #3]", |a| a.ldst_regoff(
+            Mem::LdrX,
+            9,
+            16,
+            10,
+            true
+        ));
+        case!("str x16, [sp, x17, lsl #3]", |a| a.ldst_regoff(
+            Mem::StrX,
+            16,
+            SP,
+            17,
+            true
+        ));
+        case!("strb w3, [x27, x16]", |a| a.ldst_regoff(
+            Mem::StrB,
+            3,
+            27,
+            16,
+            false
+        ));
+        case!("ldrsh x3, [x27, x16]", |a| a.ldst_regoff(
+            Mem::LdrShX,
+            3,
+            27,
+            16,
+            false
+        ));
+        case!("ldr s3, [x27, x4]", |a| a.ldst_regoff(
+            Mem::LdrS,
+            3,
+            27,
+            4,
+            false
+        ));
+        case!("str d3, [x27, x4]", |a| a.ldst_regoff(
+            Mem::StrD,
+            3,
+            27,
+            4,
+            false
+        ));
+        case!("ldrsw x3, [x27, x4]", |a| a.ldst_regoff(
+            Mem::LdrSwX,
+            3,
+            27,
+            4,
+            false
+        ));
+        case!("stp x29, x30, [sp, #-16]!", |a| a.stp_pre(FP, LR, SP, -16));
+        case!("ldp x29, x30, [sp], #16", |a| a.ldp_post(FP, LR, SP, 16));
+        case!("stp xzr, xzr, [sp, #48]", |a| a.stp(ZR, ZR, SP, 48));
+        case!("ldp x1, x2, [sp, #-512]", |a| a.ldp(1, 2, SP, -512));
+        case!("stp d8, d9, [sp, #-16]!", |a| a.stp_d_pre(8, 9, SP, -16));
+        case!("ldp d14, d15, [sp], #16", |a| a.ldp_d_post(14, 15, SP, 16));
+        case!("stp d10, d11, [sp, #32]", |a| a.stp_d(10, 11, SP, 32));
+        case!("ldp d10, d11, [sp, #32]", |a| a.ldp_d(10, 11, SP, 32));
+        case!("br x16", |a| a.br(16));
+        case!("blr x1", |a| a.blr(1));
+        case!("ret", |a| a.ret());
+        case!("brk #0x1", |a| a.brk(1));
+        case!("fmov s1, s2", |a| a.fmov(false, 1, 2));
+        case!("fmov d1, d2", |a| a.fmov(true, 1, 2));
+        case!("fabs s3, s4", |a| a.fabs(false, 3, 4));
+        case!("fneg d3, d4", |a| a.fneg(true, 3, 4));
+        case!("fsqrt s5, s6", |a| a.fsqrt(false, 5, 6));
+        case!("fsqrt d5, d6", |a| a.fsqrt(true, 5, 6));
+        case!("fcvt d1, s2", |a| a.fcvt(true, 1, 2));
+        case!("fcvt s1, d2", |a| a.fcvt(false, 1, 2));
+        case!("frintn s1, s2", |a| a.frintn(false, 1, 2));
+        case!("frintp d1, d2", |a| a.frintp(true, 1, 2));
+        case!("frintm s1, s2", |a| a.frintm(false, 1, 2));
+        case!("frintz d1, d2", |a| a.frintz(true, 1, 2));
+        case!("fmul s1, s2, s3", |a| a.fp2(false, 0, 1, 2, 3));
+        case!("fdiv d1, d2, d3", |a| a.fp2(true, 1, 1, 2, 3));
+        case!("fadd s1, s2, s3", |a| a.fp2(false, 2, 1, 2, 3));
+        case!("fsub d1, d2, d3", |a| a.fp2(true, 3, 1, 2, 3));
+        case!("fmax s1, s2, s3", |a| a.fp2(false, 4, 1, 2, 3));
+        case!("fmin d1, d2, d3", |a| a.fp2(true, 5, 1, 2, 3));
+        case!("fcmp s1, s2", |a| a.fcmp(false, 1, 2));
+        case!("fcmp d29, d31", |a| a.fcmp(true, 29, 31));
+        case!("fcsel s1, s2, s3, ne", |a| a.fcsel(
+            false,
+            1,
+            2,
+            3,
+            Cond::Ne
+        ));
+        case!("fcsel d1, d2, d3, ge", |a| a.fcsel(true, 1, 2, 3, Cond::Ge));
+        case!("scvtf s1, w2", |a| a.scvtf(false, false, 1, 2));
+        case!("scvtf d1, x2", |a| a.scvtf(true, true, 1, 2));
+        case!("ucvtf d1, w2", |a| a.ucvtf(false, true, 1, 2));
+        case!("ucvtf s1, x2", |a| a.ucvtf(true, false, 1, 2));
+        case!("fcvtzs w1, s2", |a| a.fcvtzs(false, false, 1, 2));
+        case!("fcvtzs x1, d2", |a| a.fcvtzs(true, true, 1, 2));
+        case!("fcvtzu w1, d2", |a| a.fcvtzu(false, true, 1, 2));
+        case!("fcvtzu x1, s2", |a| a.fcvtzu(true, false, 1, 2));
+        case!("fmov w1, s2", |a| a.fmov_to_gpr(false, 1, 2));
+        case!("fmov x1, d2", |a| a.fmov_to_gpr(true, 1, 2));
+        case!("fmov s1, w2", |a| a.fmov_from_gpr(false, 1, 2));
+        case!("fmov d1, x2", |a| a.fmov_from_gpr(true, 1, 2));
+        case!("fmov s1, wzr", |a| a.fmov_from_gpr(false, 1, ZR));
+        case!("cnt v31.8b, v31.8b", |a| a.cnt8b(31, 31));
+        case!("addv b31, v31.8b", |a| a.addv8b(31, 31));
+        case!("bit v1.8b, v2.8b, v31.8b", |a| a.bit8b(1, 2, 31));
+        case!("adr x16, #12", |a| a.adr(16, 12));
+        // Label-relative branches: target 2 instructions ahead / 1 behind.
+        case!("b #8", |a| {
+            let l = a.new_label();
+            a.b(l);
+            a.emit(0xD503_201F);
+            a.bind(l);
+            a.finish();
+            a.code.pop();
+        });
+        case!("b.ne #-4", |a| {
+            let l = a.new_label();
+            a.bind(l);
+            a.emit(0xD503_201F);
+            a.b_cond(Cond::Ne, l);
+            a.finish();
+            a.code.remove(0);
+        });
+        case!("cbz w3, #8", |a| {
+            let l = a.new_label();
+            a.cbz(false, 3, l);
+            a.emit(0xD503_201F);
+            a.bind(l);
+            a.finish();
+            a.code.pop();
+        });
+        case!("cbnz x9, #8", |a| {
+            let l = a.new_label();
+            a.cbnz(true, 9, l);
+            a.emit(0xD503_201F);
+            a.bind(l);
+            a.finish();
+            a.code.pop();
+        });
+
+        // mov_imm sequences, checked by value through the assembler's own expansion.
+        let imm_cases: [(bool, u64); 8] = [
+            (true, 0),
+            (true, 0xFFFF_FFFF_FFFF_FFFF),
+            (false, 0xFFFF_FFFF),
+            (true, 0x1234_5678_9ABC_DEF0),
+            (true, 0xFFFF_FFFF_FFFF_0001),
+            (false, 0x8000_0000),
+            (true, 0x0000_FFFF_0000_FFFF),
+            (true, 0x7FF8_0000_0000_0000),
+        ];
+
+        let Ok(out) = Command::new("clang").arg("--version").output() else {
+            eprintln!("clang not available; skipping");
+            return;
+        };
+        assert!(out.status.success());
+        let dir = std::env::temp_dir().join(format!("wisp-a64-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut src = String::from(".text\n");
+        let mut ours: Vec<(String, Vec<u32>)> = Vec::new();
+        for (text, f) in &cases {
+            let mut a = Asm::new();
+            f(&mut a);
+            src.push_str(&format!("{text}\n"));
+            ours.push((text.to_string(), a.code.clone()));
+        }
+        let s = dir.join("t.s");
+        let o = dir.join("t.o");
+        std::fs::write(&s, &src).unwrap();
+        let st = Command::new("clang")
+            .args(["-c", "-arch", "arm64", "-o"])
+            .arg(&o)
+            .arg(&s)
+            .status()
+            .unwrap();
+        assert!(st.success(), "clang failed to assemble the test file");
+        let text = text_section(&std::fs::read(&o).unwrap());
+        let mut words = text
+            .chunks(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()));
+        let mut mismatches = Vec::new();
+        for (t, ws) in &ours {
+            for w in ws {
+                let theirs = words.next().unwrap();
+                if *w != theirs {
+                    mismatches.push(format!("{t}: wisp {w:08x}, clang {theirs:08x}"));
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "encoding mismatches:\n{}",
+            mismatches.join("\n")
+        );
+
+        // mov_imm: execute nothing, but assemble our sequence and compare its value through
+        // a disassembly-free check: emulate MOVZ/MOVN/MOVK/ORR to recover the constant.
+        for (sf, v) in imm_cases {
+            let mut a = Asm::new();
+            a.mov_imm(sf, 5, v);
+            let mut acc: u64 = 0;
+            for &w in &a.code {
+                let hw = (w >> 21) & 3;
+                let imm = ((w >> 5) & 0xFFFF) as u64;
+                match w & 0x7F80_0000 {
+                    0x5280_0000 => acc = imm << (16 * hw),
+                    0x1280_0000 => acc = !(imm << (16 * hw)),
+                    0x7280_0000 => acc = (acc & !(0xFFFF << (16 * hw))) | (imm << (16 * hw)),
+                    _ => panic!("unexpected instruction {w:08x} in mov_imm({v:#x})"),
+                }
+            }
+            let want = if sf { v } else { v & 0xFFFF_FFFF };
+            let got = if sf { acc } else { acc & 0xFFFF_FFFF };
+            assert_eq!(got, want, "mov_imm({sf}, {v:#x})");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
