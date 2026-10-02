@@ -127,7 +127,7 @@ Apple M5、macOS 27；wasmtime 49.0.1、wasmer 7.5.0 官方發行版）。單位
 | regex 4 MB | 0.082 | 0.308 | 2.500 | 0.203 | 0.341 | 0.211 | 0.333 |
 
 wisp 比較慢的地方，直說：除了 `fib` 之外，全面輸給 wasmtime/Cranelift（1.5–2.5 倍），
-在 `primes`、`compress`、`matmul` 也輸給 Winch。主要成本是每次記憶體存取都要明確檢查邊界
+在 `primes`、`compress`、`matmul` 也輸給 Winch。可能的主要成本（未個別量測）是每次記憶體存取都要明確檢查邊界
 （wasmtime 用保護頁）、區域變數一律放在記憶體、以及每個區塊邊界都要把所有值寫回。
 直譯器比編譯器慢 3–8 倍。
 
@@ -146,7 +146,7 @@ Winch 24 ms；wasmer Cranelift 82 ms、Singlepass 32 ms（其他執行環境會�
   燃料（fuel）以直線區塊為單位扣除，所以燃料陷阱最多可能早一個區塊觸發。
 - **WASI：** 不支援 socket（`sock_*` 回傳 `ENOTSUP`）；`poll_oneoff` 支援時鐘訂閱，檔案描述子訂閱一律立即回報就緒；
   權限（rights）只記錄，實際只強制讀寫模式；`fd_readdir` 每次呼叫都重新讀取目錄。
-- **嵌入：** `Store` 只能單執行緒使用；還沒有 C API 標頭檔。
+- **嵌入：** `Store` 只能單執行緒使用；`Func`、`Memory` 等控制代碼只是索引，不會檢查是否來自同一個 store；還沒有 C API 標頭檔。
 - 效能數字來自單一機器與一組輸入，而且包含啟動時間。
 
 ## 相關專案

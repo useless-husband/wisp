@@ -150,8 +150,8 @@ binaries). Seconds, lower is better; times include start-up and compilation.
 | regex 4 MB | 0.082 | 0.308 | 2.500 | 0.203 | 0.341 | 0.211 | 0.333 |
 
 Where wisp is slower, plainly: against wasmtime/Cranelift it loses everywhere except `fib`
-(1.5–2.5×), and it loses to Winch on `primes`, `compress` and `matmul`. The biggest costs are the
-explicit bounds check on every memory access (wasmtime uses guard pages), locals that always live
+(1.5–2.5×), and it loses to Winch on `primes`, `compress` and `matmul`. The likely costs (not measured
+separately) are the explicit bounds check on every memory access (wasmtime uses guard pages), locals that always live
 in memory, and spilling everything at every block boundary. The interpreter is 3–8× slower than
 the compiler.
 
@@ -176,7 +176,8 @@ Full tables: [docs/benchmarks.md](docs/benchmarks.md).
 - **WASI:** no sockets (`sock_*` return `ENOTSUP`); `poll_oneoff` supports clock subscriptions and
   reports fd subscriptions ready immediately; rights are recorded but only read/write mode is
   enforced; `fd_readdir` rereads the directory on each call.
-- **Embedding:** a `Store` is single-threaded; there is no C API header yet.
+- **Embedding:** a `Store` is single-threaded; handles (`Func`, `Memory`, ...) are plain indices
+  and are not checked against the store they came from; there is no C API header yet.
 - Benchmarks are from one machine and one set of inputs; the numbers above include start-up.
 
 ## Related work
