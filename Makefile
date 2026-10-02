@@ -28,7 +28,7 @@ lint:
 	$(CARGO) clippy --release --all-targets -j$(JOBS) -- -D warnings
 
 bench: build
-	./bench/run.sh
+	python3 bench/run.py
 
 fuzz:
 	$(CARGO) run --release -j$(JOBS) --manifest-path tools/fuzz-diff/Cargo.toml -- --cases 2000
