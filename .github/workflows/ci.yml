@@ -34,10 +34,8 @@ jobs:
             target
             tests/programs/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml', 'tests/programs/Cargo.toml') }}
-      - name: unit and integration tests
-        run: cargo test --release --lib --bins --test programs
-      - name: spec test suite (WebAssembly/spec wg-2.0)
-        run: cargo test --release --test spec
+      - name: tests (unit, API, guest programs, spec suite wg-2.0, doctests)
+        run: cargo test --release
       - name: CLI smoke test
         run: |
           cargo build --release

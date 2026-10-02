@@ -141,13 +141,13 @@ binaries). Seconds, lower is better; times include start-up and compilation.
 
 | program | native | wisp compiler | wisp interpreter | wasmtime Cranelift | wasmtime Winch | wasmer Cranelift | wasmer Singlepass |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| primes 20M | 0.035 | 0.119 | 0.339 | 0.048 | 0.070 | 0.063 | 0.076 |
-| fib 34 | 0.011 | 0.022 | 0.110 | 0.025 | 0.030 | 0.037 | 0.027 |
-| matmul 300 | 0.005 | 0.054 | 0.300 | 0.027 | 0.047 | 0.040 | 0.529 |
-| raytrace 400 | 0.019 | 0.051 | 0.263 | 0.030 | 0.064 | 0.043 | 1.076 |
-| compress 8 MB | 0.198 | 0.706 | 3.531 | 0.307 | 0.522 | 0.319 | 0.507 |
-| json 60k | 0.113 | 0.261 | 1.747 | 0.139 | 0.322 | 0.150 | 0.270 |
-| regex 4 MB | 0.081 | 0.309 | 2.480 | 0.203 | 0.338 | 0.208 | 0.332 |
+| primes 20M | 0.034 | 0.120 | 0.344 | 0.049 | 0.070 | 0.062 | 0.072 |
+| fib 34 | 0.010 | 0.022 | 0.117 | 0.024 | 0.031 | 0.038 | 0.028 |
+| matmul 300 | 0.005 | 0.056 | 0.312 | 0.028 | 0.049 | 0.041 | 0.538 |
+| raytrace 400 | 0.019 | 0.054 | 0.275 | 0.031 | 0.066 | 0.045 | 1.087 |
+| compress 8 MB | 0.201 | 0.713 | 3.553 | 0.313 | 0.517 | 0.327 | 0.517 |
+| json 60k | 0.115 | 0.263 | 1.783 | 0.141 | 0.325 | 0.149 | 0.271 |
+| regex 4 MB | 0.082 | 0.308 | 2.500 | 0.203 | 0.341 | 0.211 | 0.333 |
 
 Where wisp is slower, plainly: against wasmtime/Cranelift it loses everywhere except `fib`
 (1.5–2.5×), and it loses to Winch on `primes`, `compress` and `matmul`. The biggest costs are the
@@ -155,8 +155,8 @@ explicit bounds check on every memory access (wasmtime uses guard pages), locals
 in memory, and spilling everything at every block boundary. The interpreter is 3–8× slower than
 the compiler.
 
-Compile time for `regex.wasm` (1.36 MB), compile-only command, wall clock: wisp 16 ms (84 MB/s,
-single thread); wasmtime Cranelift 72 ms, Winch 24 ms; wasmer Cranelift 80 ms, Singlepass 31 ms
+Compile time for `regex.wasm` (1.36 MB), compile-only command, wall clock: wisp 16 ms (83 MB/s,
+single thread); wasmtime Cranelift 72 ms, Winch 24 ms; wasmer Cranelift 82 ms, Singlepass 32 ms
 (the other runtimes compile functions in parallel and write an artefact).
 Full tables: [docs/benchmarks.md](docs/benchmarks.md).
 

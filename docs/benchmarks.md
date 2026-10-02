@@ -11,25 +11,25 @@ Versions: wisp 0.1.0; wasmtime 49.0.1 (46c23a87d 2026-09-24); wasmer 7.5.0
 
 | program | native | wisp (compiler) | wisp (interpreter) | wasmtime (Cranelift) | wasmtime (Winch) | wasmer (Cranelift) | wasmer (Singlepass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| primes 20000000 | 0.035 | 0.119 | 0.339 | 0.048 | 0.070 | 0.063 | 0.076 |
-| fib 34 | 0.011 | 0.022 | 0.110 | 0.025 | 0.030 | 0.037 | 0.027 |
-| matmul 300 | 0.005 | 0.054 | 0.300 | 0.027 | 0.047 | 0.040 | 0.529 |
-| raytrace 400 | 0.019 | 0.051 | 0.263 | 0.030 | 0.064 | 0.043 | 1.076 |
-| compress 8000000 | 0.198 | 0.706 | 3.531 | 0.307 | 0.522 | 0.319 | 0.507 |
-| json 60000 | 0.113 | 0.261 | 1.747 | 0.139 | 0.322 | 0.150 | 0.270 |
-| regex 4000000 | 0.081 | 0.309 | 2.480 | 0.203 | 0.338 | 0.208 | 0.332 |
+| primes 20000000 | 0.034 | 0.120 | 0.344 | 0.049 | 0.070 | 0.062 | 0.072 |
+| fib 34 | 0.010 | 0.022 | 0.117 | 0.024 | 0.031 | 0.038 | 0.028 |
+| matmul 300 | 0.005 | 0.056 | 0.312 | 0.028 | 0.049 | 0.041 | 0.538 |
+| raytrace 400 | 0.019 | 0.054 | 0.275 | 0.031 | 0.066 | 0.045 | 1.087 |
+| compress 8000000 | 0.201 | 0.713 | 3.553 | 0.313 | 0.517 | 0.327 | 0.517 |
+| json 60000 | 0.115 | 0.263 | 1.783 | 0.141 | 0.325 | 0.149 | 0.271 |
+| regex 4000000 | 0.082 | 0.308 | 2.500 | 0.203 | 0.341 | 0.211 | 0.333 |
 
 ## Relative to native (x slower)
 
 | program | wisp (compiler) | wisp (interpreter) | wasmtime (Cranelift) | wasmtime (Winch) | wasmer (Cranelift) | wasmer (Singlepass) |
 |---|---:|---:|---:|---:|---:|---:|
-| primes | 3.4 | 9.7 | 1.4 | 2.0 | 1.8 | 2.2 |
-| fib | 2.1 | 10.5 | 2.4 | 2.9 | 3.5 | 2.5 |
-| matmul | 10.7 | 59.6 | 5.3 | 9.4 | 7.9 | 105.2 |
-| raytrace | 2.8 | 14.1 | 1.6 | 3.4 | 2.3 | 57.7 |
-| compress | 3.6 | 17.8 | 1.6 | 2.6 | 1.6 | 2.6 |
-| json | 2.3 | 15.5 | 1.2 | 2.9 | 1.3 | 2.4 |
-| regex | 3.8 | 30.5 | 2.5 | 4.2 | 2.6 | 4.1 |
+| primes | 3.5 | 10.1 | 1.4 | 2.0 | 1.8 | 2.1 |
+| fib | 2.1 | 11.2 | 2.3 | 3.0 | 3.7 | 2.7 |
+| matmul | 11.0 | 60.8 | 5.5 | 9.6 | 7.9 | 105.0 |
+| raytrace | 2.9 | 14.8 | 1.7 | 3.6 | 2.4 | 58.6 |
+| compress | 3.5 | 17.6 | 1.6 | 2.6 | 1.6 | 2.6 |
+| json | 2.3 | 15.5 | 1.2 | 2.8 | 1.3 | 2.4 |
+| regex | 3.7 | 30.3 | 2.5 | 4.1 | 2.6 | 4.0 |
 
 Workloads: `primes` sieve of Eratosthenes, memory-bound integer loops; `fib` recursive Fibonacci, call-heavy; `matmul` f64 matrix multiply; `raytrace` ray tracer, f64 arithmetic and sqrt; `compress` miniz_oxide DEFLATE round trip; `json` serde_json generate/parse/serialise; `regex` regex crate search, 1.3 MB module.
 
@@ -37,17 +37,17 @@ Workloads: `primes` sieve of Eratosthenes, memory-bound integer loops; `fib` rec
 
 | module | size | runtime | time (ms) | MB/s |
 |---|---:|---|---:|---:|
-| regex.wasm | 1.36 MB | wisp (compiler) | 16.1 | 84.1 |
-| regex.wasm | 1.36 MB | wisp (interpreter) | 11.9 | 113.6 |
+| regex.wasm | 1.36 MB | wisp (compiler) | 16.3 | 83.4 |
+| regex.wasm | 1.36 MB | wisp (interpreter) | 12.4 | 109.1 |
 | regex.wasm | 1.36 MB | wasmtime (Cranelift) | 71.6 | 18.9 |
-| regex.wasm | 1.36 MB | wasmtime (Winch) | 24.0 | 56.5 |
-| regex.wasm | 1.36 MB | wasmer (Cranelift) | 80.0 | 16.9 |
-| regex.wasm | 1.36 MB | wasmer (Singlepass) | 31.3 | 43.4 |
-| json.wasm | 0.19 MB | wisp (compiler) | 4.5 | 41.6 |
-| json.wasm | 0.19 MB | wisp (interpreter) | 3.8 | 49.2 |
-| json.wasm | 0.19 MB | wasmtime (Cranelift) | 17.0 | 11.0 |
-| json.wasm | 0.19 MB | wasmtime (Winch) | 8.4 | 22.2 |
-| json.wasm | 0.19 MB | wasmer (Cranelift) | 27.9 | 6.7 |
-| json.wasm | 0.19 MB | wasmer (Singlepass) | 13.7 | 13.6 |
+| regex.wasm | 1.36 MB | wasmtime (Winch) | 24.2 | 56.0 |
+| regex.wasm | 1.36 MB | wasmer (Cranelift) | 82.0 | 16.5 |
+| regex.wasm | 1.36 MB | wasmer (Singlepass) | 31.5 | 43.0 |
+| json.wasm | 0.19 MB | wisp (compiler) | 4.5 | 41.3 |
+| json.wasm | 0.19 MB | wisp (interpreter) | 3.9 | 47.6 |
+| json.wasm | 0.19 MB | wasmtime (Cranelift) | 16.0 | 11.7 |
+| json.wasm | 0.19 MB | wasmtime (Winch) | 8.3 | 22.6 |
+| json.wasm | 0.19 MB | wasmer (Cranelift) | 28.8 | 6.5 |
+| json.wasm | 0.19 MB | wasmer (Singlepass) | 14.2 | 13.2 |
 
 `wisp compile` decodes, validates and compiles (or translates) in one process; the other runtimes' compile commands also write the compiled artefact to disk.
