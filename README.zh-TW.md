@@ -14,8 +14,8 @@ wisp 用大約 12,600 行、幾乎不依賴外部套件的 Rust，把 WebAssembl
 - **真實程式。** 用 `rustc --target wasm32-wasip1` 編譯的 Rust 程式（用到 `serde_json`、
   `miniz_oxide`、`regex` 與標準函式庫的檔案系統 API），輸出和原生版本完全相同。
 - **真正的編譯器。** 基線編譯器有自己的 AArch64 指令編碼器（逐字和 clang 組譯結果比對），
-  在 `MAP_JIT` 記憶體中執行，能編譯 2.0 除了 SIMD 以外的所有指令；端到端比 wasmtime/Cranelift
-  慢 1.3–3.5 倍，大約和 wasmtime 的 Winch 基線編譯器同級，但編譯速度比兩者都快。
+  在 `MAP_JIT` 記憶體中執行，能編譯 2.0 除了 SIMD 以外的所有指令；端到端在七個程式中有六個比 wasmtime/Cranelift
+  慢 1.5–2.5 倍（`fib` 反而稍快），大約和 wasmtime 的 Winch 基線編譯器同級，但編譯速度比兩者都快。
 - **守得住的沙箱。** 客程式的檔案存取，是從預先開放的目錄描述子一段一段解析路徑；
   測試證明 `..`、絕對路徑符號連結、含 `..` 的符號連結與連結迴圈都無法跑到外面。
 
@@ -102,7 +102,7 @@ assert_eq!(add.call(&mut store, &[Val::I32(2), Val::I32(3)])?, vec![Val::I32(5)]
 `cargo test --release --test programs` 會把 `tests/programs` 同時編成 `wasm32-wasip1` 與原生版本，
 在兩種引擎下執行並要求輸出相同：質數篩、遞迴費氏數列、f64 矩陣乘法、光線追蹤、DEFLATE 往返
 （`miniz_oxide`）、JSON（`serde_json`）、正規表示式搜尋（`regex`，1.3 MB 的模組）、在預開目錄中做
-檔案 I/O 的程式，以及十二個沙箱逃脫嘗試（九個逃脫全部被擋，外面沒有產生任何檔案）。
+檔案 I/O 的程式，以及一個做十二次存取的沙箱程式（其中九次是逃脫嘗試，全部被擋，外面沒有產生任何檔案）。
 
 ### 差異模糊測試
 
@@ -126,10 +126,10 @@ Apple M5、macOS 27；wasmtime 49.0.1、wasmer 7.5.0 官方發行版）。單位
 | json 60k | 0.113 | 0.261 | 1.747 | 0.139 | 0.322 | 0.150 | 0.270 |
 | regex 4 MB | 0.081 | 0.309 | 2.480 | 0.203 | 0.338 | 0.208 | 0.332 |
 
-wisp 比較慢的地方，直說：除了 `fib` 之外，全面輸給 wasmtime/Cranelift（1.3–3.5 倍），
+wisp 比較慢的地方，直說：除了 `fib` 之外，全面輸給 wasmtime/Cranelift（1.5–2.5 倍），
 在 `primes`、`compress`、`matmul` 也輸給 Winch。主要成本是每次記憶體存取都要明確檢查邊界
 （wasmtime 用保護頁）、區域變數一律放在記憶體、以及每個區塊邊界都要把所有值寫回。
-直譯器比編譯器慢 5–15 倍。
+直譯器比編譯器慢 3–8 倍。
 
 `regex.wasm`（1.36 MB）只編譯的牆鐘時間：wisp 16 ms（84 MB/s，單執行緒）；wasmtime Cranelift 72 ms、
 Winch 24 ms；wasmer Cranelift 80 ms、Singlepass 31 ms（其他執行環境會平行編譯，並把產物寫到磁碟）。

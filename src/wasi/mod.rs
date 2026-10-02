@@ -228,8 +228,18 @@ impl Mem<'_> {
             .map(|s| s.to_string())
             .map_err(|_| ERRNO_ILSEQ)
     }
-    /// The `(ptr, len)` pairs of an iovec array.
+    /// Check that `count` records of `size` bytes starting at `ptr` lie in memory.
+    fn check_array(&self, ptr: u32, count: u32, size: u32) -> R {
+        let end = ptr as u64 + count as u64 * size as u64;
+        if end > self.0.len() as u64 {
+            return Err(ERRNO_FAULT);
+        }
+        Ok(())
+    }
+    /// The `(ptr, len)` pairs of an iovec array (bounds-checked before anything is read, so
+    /// a huge count cannot make the host loop or allocate).
     fn iovs(&self, ptr: u32, n: u32) -> R<Vec<(u32, u32)>> {
+        self.check_array(ptr, n, 8)?;
         (0..n)
             .map(|i| Ok((self.u32(ptr + 8 * i)?, self.u32(ptr + 8 * i + 4)?)))
             .collect()
@@ -403,6 +413,9 @@ impl WasiCtx {
 }
 
 fn list_strings(m: &mut Mem, items: &[Vec<u8>], ptrs: u32, buf: u32) -> R {
+    m.check_array(ptrs, items.len() as u32, 4)?;
+    let total: u64 = items.iter().map(|s| s.len() as u64 + 1).sum();
+    m.check_array(buf, 1, total.try_into().map_err(|_| ERRNO_FAULT)?)?;
     let mut p = buf;
     for (i, s) in items.iter().enumerate() {
         m.put_u32(ptrs + 4 * i as u32, p)?;
@@ -706,6 +719,7 @@ fn fd_write(w: &mut WasiCtx, m: &mut Mem, a: &[Val]) -> R {
 fn fd_readdir(w: &mut WasiCtx, m: &mut Mem, a: &[Val]) -> R {
     let fd = w.dir_fd(a32(a, 0))?;
     let (buf, buf_len, cookie, used_ptr) = (a32(a, 1), a32(a, 2), a64(a, 3), a32(a, 4));
+    m.check_array(buf, 1, buf_len)?;
     // Read the whole directory through a fresh descriptor so the stream position of `fd`
     // does not matter; the cookie is the index of the next entry.
     let dfd = check(unsafe {
@@ -947,6 +961,8 @@ fn poll_oneoff(w: &mut WasiCtx, m: &mut Mem, a: &[Val]) -> R {
     if n == 0 {
         return Err(ERRNO_INVAL);
     }
+    m.check_array(inp, n, 48)?;
+    m.check_array(out, n, 32)?;
     let start = Instant::now();
     let mut clocks: Vec<(u64, Duration)> = Vec::new();
     let mut ready: Vec<(u64, u8, u16)> = Vec::new();
@@ -1113,4 +1129,87 @@ pub fn add_to_linker<T: WasiView + 'static>(linker: &mut Linker<T>, store: &mut 
             Err(Trap::new(TrapCode::Exit(a32(args, 0) as i32)))
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> WasiCtx {
+        WasiCtxBuilder::new().stdout(Output::Discard).build()
+    }
+
+    #[test]
+    fn huge_counts_fail_fast_instead_of_looping() {
+        // Regression: counts used to be multiplied in wrapping u32 arithmetic, letting a
+        // guest make the host iterate (and allocate) ~4 billion times.
+        let mut w = ctx();
+        let mut mem = vec![0u8; 65536];
+        let mut m = Mem(&mut mem);
+        let huge = Val::I32(-1);
+        let t = Instant::now();
+        assert_eq!(
+            fd_write(
+                &mut w,
+                &mut m,
+                &[Val::I32(1), Val::I32(0), huge, Val::I32(0)]
+            ),
+            Err(ERRNO_FAULT)
+        );
+        assert_eq!(
+            fd_read(
+                &mut w,
+                &mut m,
+                &[Val::I32(0), Val::I32(0), huge, Val::I32(0)]
+            ),
+            Err(ERRNO_FAULT)
+        );
+        assert_eq!(
+            poll_oneoff(
+                &mut w,
+                &mut m,
+                &[Val::I32(0), Val::I32(0), huge, Val::I32(0)]
+            ),
+            Err(ERRNO_FAULT)
+        );
+        assert_eq!(
+            fd_readdir(
+                &mut w,
+                &mut m,
+                &[
+                    Val::I32(3),
+                    Val::I32(65000),
+                    Val::I32(1000),
+                    Val::I64(0),
+                    Val::I32(0)
+                ]
+            ),
+            Err(ERRNO_BADF)
+        );
+        assert!(t.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn writes_gather_iovecs() {
+        let buf = Rc::new(RefCell::new(Vec::new()));
+        let mut w = WasiCtxBuilder::new()
+            .stdout(Output::Buffer(buf.clone()))
+            .build();
+        let mut mem = vec![0u8; 256];
+        mem[100..105].copy_from_slice(b"hello");
+        mem[110..116].copy_from_slice(b" world");
+        // two iovecs at 0: (100, 5), (110, 6)
+        for (i, v) in [100u32, 5, 110, 6].iter().enumerate() {
+            mem[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let mut m = Mem(&mut mem);
+        fd_write(
+            &mut w,
+            &mut m,
+            &[Val::I32(1), Val::I32(0), Val::I32(2), Val::I32(200)],
+        )
+        .unwrap();
+        assert_eq!(m.u32(200).unwrap(), 11);
+        assert_eq!(&*buf.borrow(), b"hello world");
+    }
 }

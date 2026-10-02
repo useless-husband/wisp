@@ -19,7 +19,8 @@ engine needs, with results anyone can re-run:
   what their native builds print.
 - **A real compiler.** The baseline compiler has its own AArch64 encoder (checked against
   clang's assembler), runs from `MAP_JIT` memory, compiles every non-SIMD 2.0 instruction, and
-  is 1.3–3.5× slower than wasmtime/Cranelift end to end, about the speed of wasmtime's Winch
+  is 1.5–2.5× slower than wasmtime/Cranelift end to end on six of seven programs (slightly
+  faster on `fib`), about the speed of wasmtime's Winch
   baseline compiler, while compiling faster than either.
 - **A sandbox that holds.** Guest file access is resolved component by component from
   preopened directory descriptors; tests show `..`, absolute symlinks, symlinks with `..` and
@@ -121,8 +122,8 @@ Per-file counts: [docs/spec-results.md](docs/spec-results.md).
 `cargo test --release --test programs` builds `tests/programs` for `wasm32-wasip1` and natively,
 runs each under both engines and requires identical output: a sieve, recursive fib, f64 matrix
 multiply, a ray tracer, a DEFLATE round trip (`miniz_oxide`), JSON (`serde_json`), regex search
-(`regex`, a 1.3 MB module), a file I/O program in a preopened directory, and twelve sandbox
-escape attempts (all nine escapes denied, nothing created outside).
+(`regex`, a 1.3 MB module), a file I/O program in a preopened directory, and a sandbox program making
+twelve accesses, nine of them escape attempts (all denied, nothing created outside).
 
 ### Differential fuzzing
 
@@ -149,9 +150,9 @@ binaries). Seconds, lower is better; times include start-up and compilation.
 | regex 4 MB | 0.081 | 0.309 | 2.480 | 0.203 | 0.338 | 0.208 | 0.332 |
 
 Where wisp is slower, plainly: against wasmtime/Cranelift it loses everywhere except `fib`
-(1.3–3.5×), and it loses to Winch on `primes`, `compress` and `matmul`. The biggest costs are the
+(1.5–2.5×), and it loses to Winch on `primes`, `compress` and `matmul`. The biggest costs are the
 explicit bounds check on every memory access (wasmtime uses guard pages), locals that always live
-in memory, and spilling everything at every block boundary. The interpreter is 5–15× slower than
+in memory, and spilling everything at every block boundary. The interpreter is 3–8× slower than
 the compiler.
 
 Compile time for `regex.wasm` (1.36 MB), compile-only command, wall clock: wisp 16 ms (84 MB/s,

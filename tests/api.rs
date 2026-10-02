@@ -227,3 +227,46 @@ fn compile_stats_report_coverage() {
         assert!(s.code_bytes > 0);
     }
 }
+
+#[test]
+fn cross_instance_calls_use_the_callee_memory() {
+    // Regression: compiled code called another instance's compiled function through a
+    // function reference with the caller's memory base/size still in the pinned registers.
+    let lib = wasm(
+        r#"(module
+            (memory 1) (data (i32.const 0) "\2a")
+            (table (export "t") 1 funcref) (elem (i32.const 0) $peek)
+            (func $peek (export "peek") (result i32) i32.const 0 i32.load8_u))"#,
+    );
+    let app = wasm(
+        r#"(module
+            (import "lib" "peek" (func $peek (result i32)))
+            (import "lib" "t" (table 1 funcref))
+            (type $t (func (result i32)))
+            (memory 1) (data (i32.const 0) "\07")
+            (func (export "direct") (result i32) call $peek i32.const 0 i32.load8_u i32.add)
+            (func (export "indirect") (result i32)
+                i32.const 0 call_indirect (type $t) i32.const 0 i32.load8_u i32.add))"#,
+    );
+    for s in strategies() {
+        let engine = Engine::new(Config::default().strategy(s));
+        let (m1, m2) = (
+            Module::new(&engine, &lib).unwrap(),
+            Module::new(&engine, &app).unwrap(),
+        );
+        let mut store = Store::new(&engine, ());
+        let mut linker = Linker::new();
+        let l = linker.instantiate(&mut store, &m1).unwrap();
+        linker.instance(&store, "lib", l);
+        let a = linker.instantiate(&mut store, &m2).unwrap();
+        for name in ["direct", "indirect"] {
+            let f = a.get_func(&store, name).unwrap();
+            // 42 from the library's memory + 7 from the app's own memory afterwards.
+            assert_eq!(
+                f.call(&mut store, &[]).unwrap(),
+                vec![Val::I32(49)],
+                "{name} under {s:?}"
+            );
+        }
+    }
+}

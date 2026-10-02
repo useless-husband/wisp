@@ -130,7 +130,7 @@ pub fn logical_imm(value: u64, width: u32) -> Option<u32> {
 }
 
 // Some forms are emitted only by the encoder test, which checks every method against clang.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
 impl Asm {
     pub fn new() -> Self {
         Self::default()

@@ -706,15 +706,28 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
         }
     }
 
-    /// Call through the `VmFuncRef` in x9.
+    /// The callee may belong to another instance: it gets its own context and memory
+    /// registers, and ours are restored afterwards.
     fn call_funcref(&mut self) {
         self.a
             .ldst_off(Mem::LdrX, T0, XREF, FUNCREF_CODE as i64, T1);
         self.a.mov(true, XCALLER, VMCTX);
         self.a
             .ldst_off(Mem::LdrX, VMCTX, XREF, FUNCREF_VMCTX as i64, T1);
+        // Host functions have no context; the slow trampoline does not need one.
+        let skip = self.a.new_label();
+        self.a.cbz(true, VMCTX, skip);
+        self.a.ldst_off(Mem::LdrX, T1, VMCTX, CTX_MEMORY as i64, T1);
+        self.a.cbz(true, T1, skip);
+        self.a.ldst_off(Mem::LdrX, MEMBASE, T1, MEM_BASE as i64, T1);
+        self.a.ldst_off(Mem::LdrX, MEMSIZE, T1, MEM_SIZE as i64, T1);
+        self.a.bind(skip);
         self.a.blr(T0);
         self.a.ldst_off(Mem::LdrX, VMCTX, SP, self.out, T1);
+        if self.has_memory {
+            self.a.ldst_off(Mem::LdrX, T0, VMCTX, CTX_MEMORY as i64, T1);
+            self.a.ldst_off(Mem::LdrX, MEMBASE, T0, MEM_BASE as i64, T1);
+        }
     }
 
     /// Call a runtime helper with integer arguments taken from the listed sources.
