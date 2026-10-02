@@ -142,7 +142,7 @@ fn stubs() -> &'static Stubs {
         a.ret();
         a.bind(trap);
         emit_exit(&mut a);
-        a.finish();
+        a.finish().expect("trampolines");
         let mem =
             CodeMemory::new(&a.bytes()).expect("cannot allocate executable memory for trampolines");
         let base = mem.ptr() as usize;
@@ -249,7 +249,7 @@ pub(crate) fn compile_module(m: &ModuleData, info: &[FuncInfo], fuel: bool) -> C
         }
         asm.bind(trap_exit);
         emit_exit(&mut asm);
-        asm.finish();
+        asm.finish()?;
         let bytes = asm.bytes();
         let entries: Vec<Option<usize>> = (0..ndef)
             .map(|d| {
@@ -260,10 +260,11 @@ pub(crate) fn compile_module(m: &ModuleData, info: &[FuncInfo], fuel: bool) -> C
                 }
             })
             .collect();
-        (bytes, entries, reasons)
+        Ok::<_, String>((bytes, entries, reasons))
     }));
     let (bytes, entries, reasons) = match r {
-        Ok(x) => x,
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => return all_interp(e),
         Err(p) => {
             let msg = p
                 .downcast_ref::<&str>()

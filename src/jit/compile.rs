@@ -158,7 +158,13 @@ pub(crate) struct FuncCompiler<'a, 'b> {
     has_memory: bool,
     fuel_at: Option<usize>,
     fuel_n: u32,
+    /// Local stub: `b trap_exit` with the trap code already in w0.
+    w0_exit: Label,
 }
+
+/// Largest function body (in instructions) the 19-bit conditional branches to the
+/// function's trap stubs can span.
+const MAX_FUNC_INSNS: u32 = 200_000;
 
 macro_rules! bail {
     ($($t:tt)*) => { return Err(format!($($t)*)) };
@@ -186,6 +192,8 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
             bail!("frame of {frame} bytes is too large");
         }
         let epilogue = a.new_label();
+        let w0_exit = a.new_label();
+        let start = a.pos();
         let mut c = FuncCompiler {
             a,
             cx,
@@ -208,6 +216,7 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
             has_memory: !m.memories.is_empty(),
             fuel_at: None,
             fuel_n: 0,
+            w0_exit,
         };
         c.prologue();
         let r = Reader::new(&m.bytes).sub(body.code_start, body.code_end, "unexpected end");
@@ -239,6 +248,11 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
             c.a.bind(l);
             c.a.movz(false, 0, code as u16, 0);
             c.a.b(c.cx.trap_exit);
+        }
+        c.a.bind(c.w0_exit);
+        c.a.b(c.cx.trap_exit);
+        if c.a.pos() - start > MAX_FUNC_INSNS {
+            bail!("function body too large for the baseline compiler");
         }
         Ok(())
     }
@@ -730,7 +744,9 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
 
     /// After a helper returning a trap code in w0: trap if nonzero.
     fn check_w0(&mut self) {
-        self.a.cbnz(false, 0, self.cx.trap_exit);
+        // CBNZ reaches only +-1 MiB; go through a local stub with a long branch.
+        let l = self.w0_exit;
+        self.a.cbnz(false, 0, l);
     }
 
     // ---- memory ----

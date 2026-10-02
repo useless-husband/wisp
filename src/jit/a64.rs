@@ -177,37 +177,24 @@ impl Asm {
         }
     }
 
-    /// Resolve all label references. Panics on an unbound label or an out-of-range branch.
-    pub fn finish(&mut self) {
+    /// Resolve all label references. Fails on an unbound label or an out-of-range branch.
+    pub fn finish(&mut self) -> Result<(), String> {
         for &(at, l, kind) in &self.fixups {
-            let target = self.labels[l.0 as usize].expect("unbound label");
+            let target = self.labels[l.0 as usize].ok_or("unbound label")?;
             let delta = target as i64 - at as i64;
             let ins = &mut self.code[at as usize];
-            match kind {
-                Fixup::Imm26 => {
-                    assert!(
-                        (-(1 << 25)..(1 << 25)).contains(&delta),
-                        "branch out of range"
-                    );
-                    *ins |= (delta as u32) & 0x03FF_FFFF;
-                }
-                Fixup::Imm19 => {
-                    assert!(
-                        (-(1 << 18)..(1 << 18)).contains(&delta),
-                        "conditional branch out of range"
-                    );
-                    *ins |= ((delta as u32) & 0x7FFFF) << 5;
-                }
-                Fixup::Imm14 => {
-                    assert!(
-                        (-(1 << 13)..(1 << 13)).contains(&delta),
-                        "test branch out of range"
-                    );
-                    *ins |= ((delta as u32) & 0x3FFF) << 5;
-                }
+            let (bits, shift) = match kind {
+                Fixup::Imm26 => (26, 0),
+                Fixup::Imm19 => (19, 5),
+                Fixup::Imm14 => (14, 5),
+            };
+            if !(-(1i64 << (bits - 1))..(1i64 << (bits - 1))).contains(&delta) {
+                return Err(format!("branch of {delta} instructions out of range"));
             }
+            *ins |= ((delta as u32) & ((1u32 << bits) - 1)) << shift;
         }
         self.fixups.clear();
+        Ok(())
     }
 
     pub fn bytes(&self) -> Vec<u8> {
@@ -1235,7 +1222,7 @@ mod assembler_check {
             a.b(l);
             a.emit(0xD503_201F);
             a.bind(l);
-            a.finish();
+            a.finish().unwrap();
             a.code.pop();
         });
         case!("b.ne #-4", |a| {
@@ -1243,7 +1230,7 @@ mod assembler_check {
             a.bind(l);
             a.emit(0xD503_201F);
             a.b_cond(Cond::Ne, l);
-            a.finish();
+            a.finish().unwrap();
             a.code.remove(0);
         });
         case!("cbz w3, #8", |a| {
@@ -1251,7 +1238,7 @@ mod assembler_check {
             a.cbz(false, 3, l);
             a.emit(0xD503_201F);
             a.bind(l);
-            a.finish();
+            a.finish().unwrap();
             a.code.pop();
         });
         case!("cbnz x9, #8", |a| {
@@ -1259,7 +1246,7 @@ mod assembler_check {
             a.cbnz(true, 9, l);
             a.emit(0xD503_201F);
             a.bind(l);
-            a.finish();
+            a.finish().unwrap();
             a.code.pop();
         });
 

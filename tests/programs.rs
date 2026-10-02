@@ -124,6 +124,7 @@ fn cpu_programs_match_native() {
         ("json", &["2000"]),
         ("matmul", &["48"]),
         ("fib", &["22"]),
+        ("regex", &["100000"]),
     ];
     for (name, args) in cases {
         let native = run_native(name, args);
