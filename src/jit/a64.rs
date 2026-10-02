@@ -60,8 +60,6 @@ enum Fixup {
     Imm26,
     /// B.cond / CBZ / CBNZ: imm19 at bit 5.
     Imm19,
-    /// TBZ / TBNZ: imm14 at bit 5.
-    Imm14,
 }
 
 /// Accumulates machine code with label fixups.
@@ -131,6 +129,8 @@ pub fn logical_imm(value: u64, width: u32) -> Option<u32> {
     Some((n << 12) | (immr << 6) | imms)
 }
 
+// Some forms are emitted only by the encoder test, which checks every method against clang.
+#[cfg_attr(not(test), allow(dead_code))]
 impl Asm {
     pub fn new() -> Self {
         Self::default()
@@ -152,10 +152,6 @@ impl Asm {
     pub fn bind(&mut self, l: Label) {
         debug_assert!(self.labels[l.0 as usize].is_none(), "label bound twice");
         self.labels[l.0 as usize] = Some(self.pos());
-    }
-
-    pub fn is_bound(&self, l: Label) -> bool {
-        self.labels[l.0 as usize].is_some()
     }
 
     pub fn label_pos(&self, l: Label) -> Option<u32> {
@@ -186,7 +182,6 @@ impl Asm {
             let (bits, shift) = match kind {
                 Fixup::Imm26 => (26, 0),
                 Fixup::Imm19 => (19, 5),
-                Fixup::Imm14 => (14, 5),
             };
             if !(-(1i64 << (bits - 1))..(1i64 << (bits - 1))).contains(&delta) {
                 return Err(format!("branch of {delta} instructions out of range"));
@@ -213,19 +208,6 @@ impl Asm {
         self.emit(0x9400_0000);
     }
 
-    /// BL to an instruction index fixed later by the caller (cross-function calls).
-    pub fn bl_placeholder(&mut self) -> u32 {
-        let p = self.pos();
-        self.emit(0x9400_0000);
-        p
-    }
-
-    pub fn patch_bl(&mut self, at: u32, target: u32) {
-        let delta = target as i64 - at as i64;
-        assert!((-(1 << 25)..(1 << 25)).contains(&delta));
-        self.code[at as usize] = 0x9400_0000 | ((delta as u32) & 0x03FF_FFFF);
-    }
-
     pub fn b_cond(&mut self, c: Cond, l: Label) {
         self.fixups.push((self.pos(), l, Fixup::Imm19));
         self.emit(0x5400_0000 | c as u32);
@@ -239,11 +221,6 @@ impl Asm {
     pub fn cbnz(&mut self, sf: bool, rt: u8, l: Label) {
         self.fixups.push((self.pos(), l, Fixup::Imm19));
         self.emit(sfb(sf) | 0x3500_0000 | r(rt));
-    }
-
-    pub fn tbnz(&mut self, rt: u8, bit: u32, l: Label) {
-        self.fixups.push((self.pos(), l, Fixup::Imm14));
-        self.emit(((bit >> 5) << 31) | 0x3700_0000 | ((bit & 31) << 19) | r(rt));
     }
 
     pub fn br(&mut self, rn: u8) {
@@ -431,11 +408,6 @@ impl Asm {
     /// `sub xd|sp, xn|sp, xm` (extended register form, UXTX).
     pub fn sub_ext(&mut self, rd: u8, rn: u8, rm: u8) {
         self.emit(0xCB20_6000 | (r(rm) << 16) | (r(rn) << 5) | r(rd));
-    }
-
-    /// `cmp xn|sp, xm` (extended register form, UXTX).
-    pub fn cmp_ext(&mut self, rn: u8, rm: u8) {
-        self.emit(0xEB20_6000 | (r(rm) << 16) | (r(rn) << 5) | r(ZR));
     }
 
     fn logical_reg(&mut self, base: u32, sf: bool, rd: u8, rn: u8, rm: u8) {
@@ -841,10 +813,6 @@ impl Mem {
             StrD => (0xFD00_0000, 3),
         }
     }
-
-    pub fn size(self) -> u32 {
-        1 << self.enc().1
-    }
 }
 
 #[cfg(test)]
@@ -904,7 +872,8 @@ mod assembler_check {
 
     #[test]
     fn encodings_match_clang() {
-        let mut cases: Vec<(&str, Box<dyn Fn(&mut Asm)>)> = Vec::new();
+        type Emit = Box<dyn Fn(&mut Asm)>;
+        let mut cases: Vec<(&str, Emit)> = Vec::new();
         macro_rules! case {
             ($text:expr, |$a:ident| $e:expr) => {
                 cases.push(($text, Box::new(|$a: &mut Asm| $e)));

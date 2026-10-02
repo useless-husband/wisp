@@ -17,7 +17,7 @@ pub(crate) type HostFn =
     Rc<dyn Fn(&mut StoreInner, Option<u32>, &[Val], &mut [Val]) -> Result<(), Trap>>;
 
 pub(crate) enum FuncKind {
-    Wasm { instance: u32 },
+    Wasm,
     Host(HostFn),
 }
 
@@ -36,9 +36,9 @@ pub(crate) struct GlobalCell {
 
 pub(crate) struct InstanceData {
     pub module: Arc<ModuleInner>,
-    pub vmctx: Box<VmCtx>,
+    /// Owned for its address: function references and compiled code point at it.
+    _vmctx: Box<VmCtx>,
     pub funcs: Vec<u32>,
-    pub tables: Vec<u32>,
     pub memories: Vec<u32>,
     pub globals: Vec<u32>,
     // Arrays the VmCtx points into; never resized after creation.
@@ -411,15 +411,6 @@ impl StoreInner {
         d.memories.first().map(|&m| Memory(m))
     }
 
-    pub(crate) fn extern_type(&self, e: Extern) -> ExternType {
-        match e {
-            Extern::Func(f) => ExternType::Func(self.funcs[f.0 as usize].ty.clone()),
-            Extern::Table(t) => ExternType::Table(self.tables[t.0 as usize].ty),
-            Extern::Memory(m) => ExternType::Memory(self.memories[m.0 as usize].current_type()),
-            Extern::Global(g) => ExternType::Global(self.globals[g.0 as usize].ty),
-        }
-    }
-
     // ---- instantiation ----
 
     pub(crate) fn instantiate(
@@ -502,7 +493,7 @@ impl StoreInner {
             });
             self.funcs.push(FuncInst {
                 ty,
-                kind: FuncKind::Wasm { instance: inst_idx },
+                kind: FuncKind::Wasm,
                 vmref,
             });
             funcs.push(addr);
@@ -574,9 +565,8 @@ impl StoreInner {
         let datas: Vec<(usize, usize)> = m.datas.iter().map(|d| (d.start, d.end)).collect();
         self.instances.push(InstanceData {
             module: module.clone(),
-            vmctx,
+            _vmctx: vmctx,
             funcs,
-            tables,
             memories,
             globals,
             _func_ptrs: func_ptrs,

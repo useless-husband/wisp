@@ -45,7 +45,6 @@ pub const T1: u8 = 17;
 pub const XREF: u8 = 9;
 pub const XCALLER: u8 = 10;
 const F0: u8 = 31;
-const F1: u8 = 30;
 
 const GPR_POOL: u32 = 0x01F8_F9FF; // x0-x8, x11-x15, x19-x24
 const FPR_POOL: u32 = 0x3FFF_FFFF; // v0-v29
@@ -139,7 +138,6 @@ fn store_kind(t: ValType) -> Mem {
 pub(crate) struct FuncCompiler<'a, 'b> {
     a: &'b mut Asm,
     cx: &'b ModCtx<'a>,
-    func: u32,
     locals: Vec<ValType>,
     nparams: usize,
     results: Vec<ValType>,
@@ -197,7 +195,6 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
         let mut c = FuncCompiler {
             a,
             cx,
-            func,
             nparams: ft.params.len(),
             results: ft.results.to_vec(),
             locals,
@@ -398,7 +395,7 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
     }
 
     /// Write entry `i` into its own slot, constants included.
-    fn to_slot(&mut self, i: usize) {
+    fn write_slot(&mut self, i: usize) {
         if let Loc::Imm(v) = self.stack[i].loc {
             let off = self.slot_off(i);
             self.store_imm(v, SP, off);
@@ -1332,7 +1329,7 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
                 self.spill_all();
                 let n = self.stack.len();
                 for i in n - p.len()..n {
-                    self.to_slot(i);
+                    self.write_slot(i);
                 }
                 let label = self.a.new_label();
                 let kind = if matches!(op, Op::Loop(_)) {
@@ -1359,7 +1356,7 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
                 self.spill_all();
                 let n = self.stack.len();
                 for i in n - p.len()..n {
-                    self.to_slot(i);
+                    self.write_slot(i);
                 }
                 let else_l = self.a.new_label();
                 self.branch_on(&c, false, else_l);
@@ -1381,7 +1378,7 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
                     let n = self.ctrls[fi].results.len();
                     let len = self.stack.len();
                     for i in len - n..len {
-                        self.to_slot(i);
+                        self.write_slot(i);
                     }
                     self.jump(fi);
                 }
@@ -1405,7 +1402,7 @@ impl<'a, 'b> FuncCompiler<'a, 'b> {
                     let n = self.ctrls[fi].results.len();
                     let len = self.stack.len();
                     for i in len - n..len {
-                        self.to_slot(i);
+                        self.write_slot(i);
                     }
                 }
                 if fi == 0 {

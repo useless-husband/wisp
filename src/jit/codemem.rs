@@ -91,10 +91,6 @@ impl CodeMemory {
     pub fn ptr(&self) -> *const u8 {
         self.ptr
     }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
 }
 
 impl Drop for CodeMemory {

@@ -7,7 +7,7 @@ use crate::interp::bytecode::InterpModule;
 use crate::interp::translate::Translator;
 use crate::runtime::vm::{KIND_COMPILED, KIND_INTERP};
 use crate::types::*;
-use crate::validate::{FuncInfo, validate};
+use crate::validate::validate;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,6 @@ pub(crate) struct ModuleInner {
     pub data: ModuleData,
     pub interp: InterpModule,
     pub jit: Option<crate::jit::CompiledModule>,
-    pub info: Vec<FuncInfo>,
     pub stats: CompileStats,
 }
 
@@ -111,7 +110,6 @@ impl Module {
                 data,
                 interp,
                 jit,
-                info,
                 stats,
             }),
         })

@@ -44,6 +44,14 @@ jobs:
           ./target/release/wisp run tests/programs/target/wasm32-wasip1/release/hello.wasm ci
           ./target/release/wisp run tests/programs/target/wasm32-wasip1/release/primes.wasm 100000
 
+  fuzz:
+    # Interpreter versus compiler on wasm-smith modules (short run; `make fuzz` runs more).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run --release --manifest-path tools/fuzz-diff/Cargo.toml -- --cases 300 --seed 7000
+
   lint:
     runs-on: macos-latest
     steps:

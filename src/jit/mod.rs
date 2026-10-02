@@ -30,11 +30,10 @@ use compile::{FuncCompiler, ModCtx, RT, Shims, T0, T1, VMCTX, XCALLER, XREF};
 use std::sync::OnceLock;
 
 /// Whether this host can run compiled code.
+/// The Linux code paths (mprotect, __clear_cache, pthread_getattr_np) exist but have not
+/// been tested, so only macOS is enabled.
 pub(crate) fn available() -> bool {
-    cfg!(all(
-        target_arch = "aarch64",
-        any(target_os = "macos", target_os = "linux")
-    ))
+    cfg!(all(target_arch = "aarch64", target_os = "macos"))
 }
 
 /// Process-wide trampolines.
@@ -134,7 +133,7 @@ fn stubs() -> &'static Stubs {
         a.mov(true, 0, XREF);
         a.add_imm(true, 1, FP, 16);
         a.mov(true, 2, XCALLER);
-        a.mov_imm(true, T0, shim_slow_call as usize as u64);
+        a.mov_imm(true, T0, shim_slow_call as *const () as u64);
         a.blr(T0);
         let trap = a.new_label();
         a.cbnz(false, 0, trap);
@@ -195,16 +194,16 @@ impl CompiledModule {
 fn shims() -> Shims {
     Shims {
         slow_tramp: stubs().slow_tramp as u64,
-        memory_grow: shim_memory_grow as usize as u64,
-        memory_fill: shim_memory_fill as usize as u64,
-        memory_copy: shim_memory_copy as usize as u64,
-        memory_init: shim_memory_init as usize as u64,
-        data_drop: shim_data_drop as usize as u64,
-        table_grow: shim_table_grow as usize as u64,
-        table_fill: shim_table_fill as usize as u64,
-        table_copy: shim_table_copy as usize as u64,
-        table_init: shim_table_init as usize as u64,
-        elem_drop: shim_elem_drop as usize as u64,
+        memory_grow: shim_memory_grow as *const () as u64,
+        memory_fill: shim_memory_fill as *const () as u64,
+        memory_copy: shim_memory_copy as *const () as u64,
+        memory_init: shim_memory_init as *const () as u64,
+        data_drop: shim_data_drop as *const () as u64,
+        table_grow: shim_table_grow as *const () as u64,
+        table_fill: shim_table_fill as *const () as u64,
+        table_copy: shim_table_copy as *const () as u64,
+        table_init: shim_table_init as *const () as u64,
+        elem_drop: shim_elem_drop as *const () as u64,
     }
 }
 
