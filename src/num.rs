@@ -353,16 +353,29 @@ macro_rules! funop {
         $(#[inline(always)] pub fn $name(a: u64) -> u64 { let $x = $conv(a); $w($e) })*
     };
 }
+// Rounding a NaN must give an arithmetic NaN (quiet bit set). AArch64's
+// FRINT* does that, but on x86-64 without SSE4.1 Rust's software rounding
+// returns a signalling NaN unchanged, so quiet it explicitly. Setting only the
+// quiet bit keeps the sign and payload, as FRINT* does.
+#[inline(always)]
+fn quiet_f32(x: f32) -> f32 {
+    f32::from_bits(x.to_bits() | 0x0040_0000)
+}
+#[inline(always)]
+fn quiet_f64(x: f64) -> f64 {
+    f64::from_bits(x.to_bits() | 0x0008_0000_0000_0000)
+}
+
 funop! {
-    f32_ceil, f32v, wf32, |x| x.ceil();
-    f32_floor, f32v, wf32, |x| x.floor();
-    f32_trunc, f32v, wf32, |x| x.trunc();
-    f32_nearest, f32v, wf32, |x| x.round_ties_even();
+    f32_ceil, f32v, wf32, |x| if x.is_nan() { quiet_f32(x) } else { x.ceil() };
+    f32_floor, f32v, wf32, |x| if x.is_nan() { quiet_f32(x) } else { x.floor() };
+    f32_trunc, f32v, wf32, |x| if x.is_nan() { quiet_f32(x) } else { x.trunc() };
+    f32_nearest, f32v, wf32, |x| if x.is_nan() { quiet_f32(x) } else { x.round_ties_even() };
     f32_sqrt, f32v, wf32, |x| x.sqrt();
-    f64_ceil, f64v, wf64, |x| x.ceil();
-    f64_floor, f64v, wf64, |x| x.floor();
-    f64_trunc, f64v, wf64, |x| x.trunc();
-    f64_nearest, f64v, wf64, |x| x.round_ties_even();
+    f64_ceil, f64v, wf64, |x| if x.is_nan() { quiet_f64(x) } else { x.ceil() };
+    f64_floor, f64v, wf64, |x| if x.is_nan() { quiet_f64(x) } else { x.floor() };
+    f64_trunc, f64v, wf64, |x| if x.is_nan() { quiet_f64(x) } else { x.trunc() };
+    f64_nearest, f64v, wf64, |x| if x.is_nan() { quiet_f64(x) } else { x.round_ties_even() };
     f64_sqrt, f64v, wf64, |x| x.sqrt();
 }
 
