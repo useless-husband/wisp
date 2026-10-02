@@ -1,0 +1,12 @@
+[package]
+name = "fuzz-diff"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wisp = { path = "../.." }
+wasm-smith = "0.260"
+arbitrary = "1"
